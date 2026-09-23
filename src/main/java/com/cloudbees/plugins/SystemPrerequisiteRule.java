@@ -184,10 +184,11 @@ public class SystemPrerequisiteRule implements Describable<SystemPrerequisiteRul
         }
 
         public ListBoxModel doFillInterpreterItems() {
-            return new ListBoxModel()
-                    .add("Shell Script", INTERP_SHELL)
-                    .add("Windows Batch Command", INTERP_WINDOWS)
-                    .add("Groovy Script", INTERP_GROOVY);
+            ListBoxModel m = new ListBoxModel();
+            m.add("Shell Script", INTERP_SHELL);
+            m.add("Windows Batch Command", INTERP_WINDOWS);
+            m.add("Groovy Script", INTERP_GROOVY);
+            return m;
         }
     }
 }
