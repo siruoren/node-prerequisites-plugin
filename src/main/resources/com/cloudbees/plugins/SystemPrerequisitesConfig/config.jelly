@@ -70,7 +70,11 @@
               <f:checkbox field="sandbox" default="true" />
             </f:entry>
 
-            <f:entry title="Script" field="script" help="/plugin/node-prerequisites/help-system-script.html">
+            <f:entry title="Interpreter" field="interpreter">
+              <f:select default="groovy script" />
+            </f:entry>
+
+            <f:entry title="Script" field="script">
               <f:textarea field="script" />
             </f:entry>
 

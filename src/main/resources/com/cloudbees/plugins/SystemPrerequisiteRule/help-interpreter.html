@@ -1,0 +1,10 @@
+<div>
+    Command interpreter used to execute the prerequisite script on the target node.
+    <ul>
+        <li><strong>Shell Script</strong> &ndash; runs the script with <code>sh</code> (Linux/macOS agents)</li>
+        <li><strong>Windows Batch Command</strong> &ndash; runs the script with <code>cmd /c</code> (Windows agents)</li>
+        <li><strong>Groovy Script</strong> &ndash; evaluates the script in a Groovy sandbox on the agent via Jenkins Remoting
+            (the <em>Groovy Sandbox</em> checkbox still applies)</li>
+    </ul>
+    For Shell/Batch the script runs as a process on the node; for Groovy it runs inside the agent JVM.
+</div>

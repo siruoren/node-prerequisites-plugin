@@ -94,7 +94,12 @@
 			<groupId>org.jenkins-ci.plugins</groupId>
 			<artifactId>matrix-project</artifactId>
 			<version>1.18</version>
-			<scope>provided</scope>
+			<!-- Plugin-to-plugin dependencies must be 'compile' scope (not 'provided').
+			     The maven-hpi-plugin's test-hpl goal rejects 'provided' plugin deps
+			     ("should be the 'compile' scope"); compile scope records it in the
+			     Plugin-Dependencies manifest and lets Jenkins resolve it at runtime
+			     without bundling matrix-project's classes into WEB-INF/lib. -->
+			<scope>compile</scope>
 		</dependency>
 		<dependency>
 			<groupId>com.google.code.findbugs</groupId>

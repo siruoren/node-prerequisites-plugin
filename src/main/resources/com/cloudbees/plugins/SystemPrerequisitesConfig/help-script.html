@@ -1,24 +1,35 @@
 <div>
-    A Groovy script to evaluate whether the node meets this system prerequisite.
-    Runs <strong>on the target node</strong> (not the Jenkins controller) in a
-    Groovy sandbox. The script is sent to the agent via Jenkins Remoting.
-    <br/><br/>
-    The script must return <code>true</code> if the node passes the check,
-    or <code>false</code> to block the node.
-    <br/><br/>
-    Available bindings:
+    The prerequisite script run for this rule. Its meaning depends on the
+    <strong>Interpreter</strong> selected above:
     <ul>
-        <li><code>NODE_NAME</code> &ndash; node name (String)</li>
-        <li><code>NODE_HOSTNAME</code> &ndash; hostname resolved on the node (String)</li>
-        <li><code>NODE_IP</code> &ndash; IP address resolved on the node (String)</li>
-        <li><code>NODE_LABELS</code> &ndash; space-separated labels (String)</li>
+        <li><strong>Groovy Script</strong> &ndash; a Groovy script evaluated in a sandbox
+            <em>on the target node</em> (not the controller) via Jenkins Remoting.
+            It must return <code>true</code> to pass, or <code>false</code> to block the node.
+            Available bindings:
+            <ul>
+                <li><code>NODE_NAME</code> &ndash; node name (String)</li>
+                <li><code>NODE_HOSTNAME</code> &ndash; hostname resolved on the node (String)</li>
+                <li><code>NODE_IP</code> &ndash; IP address resolved on the node (String)</li>
+                <li><code>NODE_LABELS</code> &ndash; space-separated labels (String)</li>
+            </ul>
+        </li>
+        <li><strong>Shell Script</strong> / <strong>Windows Batch Command</strong> &ndash; the script
+            runs <em>as a process on the target node</em>. It must exit <code>0</code> to pass.
+            The same values are exposed as environment variables
+            (<code>NODE_NAME</code>, <code>NODE_HOSTNAME</code>, <code>NODE_IP</code>, <code>NODE_LABELS</code>).
+        </li>
     </ul>
     <br/>
-    Example:
+    Groovy example:
     <pre>// Check disk space on the node itself
 def root = new File('/')
 def free = root.getFreeSpace() / (1024 * 1024 * 1024)
 println "Free space on ${NODE_NAME}: ${free}GB"
 return free > 10
+    </pre>
+    Shell example:
+    <pre>#!/bin/sh
+free=$(df -P / | awk 'NR==2 {print $4}')
+test "$free" -gt 10485760
     </pre>
 </div>

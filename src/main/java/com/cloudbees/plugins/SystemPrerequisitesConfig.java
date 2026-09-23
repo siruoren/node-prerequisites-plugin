@@ -19,13 +19,20 @@ package com.cloudbees.plugins;
 
 import edu.umd.cs.findbugs.annotations.NonNull;
 import hudson.Extension;
+import hudson.FilePath;
+import hudson.Proc;
 import hudson.model.Computer;
 import hudson.model.Node;
+import hudson.model.TaskListener;
 import hudson.model.labels.LabelAtom;
 import hudson.remoting.Channel;
 import hudson.remoting.VirtualChannel;
+import hudson.tasks.BatchFile;
+import hudson.tasks.CommandInterpreter;
+import hudson.tasks.Shell;
 import jenkins.model.GlobalConfiguration;
 import net.sf.json.JSONObject;
+import org.jenkinsci.remoting.RoleChecker;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.StaplerRequest;
@@ -38,11 +45,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import static hudson.model.TaskListener.NULL;
 
 /**
  * System-level (global) prerequisites configuration.
@@ -153,42 +166,54 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
 
             Map<String, Object> variables = buildBinding(node, nodeName);
 
+            String interpreter = rule.getInterpreter();
+
             boolean passed;
-            Computer computer = node.toComputer();
-            if (computer == null) {
-                passed = runLocal(rule.getScript(), variables);
-            } else {
-                VirtualChannel channel = computer.getChannel();
-                if (channel != null) {
-                    GroovySandboxExecutor executor = new GroovySandboxExecutor(rule.getScript(), variables);
-                    hudson.remoting.Future<Boolean> rf = channel.callAsync(executor);
-                    try {
-                        passed = rf.get(checkTimeoutSeconds, TimeUnit.SECONDS);
-                    } catch (TimeoutException e) {
-                        rf.cancel(true);
-                        String msg = "System prerequisite '" + rule.getName()
-                                + "' timed out on node: " + nodeName
-                                + " (timeout: " + checkTimeoutSeconds + "s)";
-                        LOGGER.log(Level.WARNING, msg);
-                        return msg;
-                    } catch (InterruptedException e) {
-                        rf.cancel(true);
-                        String msg = "System prerequisite '" + rule.getName()
-                                + "' was interrupted on node: " + nodeName;
-                        LOGGER.log(Level.WARNING, msg);
-                        return msg;
-                    } catch (ExecutionException e) {
-                        rf.cancel(true);
-                        String msg = "System prerequisite '" + rule.getName()
-                                + "' failed on node: " + nodeName;
-                        Throwable cause = e.getCause();
-                        LOGGER.log(Level.WARNING, msg
-                                + (cause != null ? " (cause: " + cause + ")" : ""), e);
-                        return msg;
-                    }
-                } else {
+            if (interpreter == null || SystemPrerequisiteRule.INTERP_GROOVY.equals(interpreter)) {
+                // Groovy sandbox execution on the agent JVM via Remoting.
+                Computer computer = node.toComputer();
+                if (computer == null) {
                     passed = runLocal(rule.getScript(), variables);
+                } else {
+                    VirtualChannel channel = computer.getChannel();
+                    if (channel != null) {
+                        GroovySandboxExecutor executor = new GroovySandboxExecutor(rule.getScript(), variables);
+                        hudson.remoting.Future<Boolean> rf = channel.callAsync(executor);
+                        try {
+                            passed = rf.get(checkTimeoutSeconds, TimeUnit.SECONDS);
+                        } catch (TimeoutException e) {
+                            rf.cancel(true);
+                            String msg = "System prerequisite '" + rule.getName()
+                                    + "' timed out on node: " + nodeName
+                                    + " (timeout: " + checkTimeoutSeconds + "s)";
+                            LOGGER.log(Level.WARNING, msg);
+                            return msg;
+                        } catch (InterruptedException e) {
+                            rf.cancel(true);
+                            String msg = "System prerequisite '" + rule.getName()
+                                    + "' was interrupted on node: " + nodeName;
+                            LOGGER.log(Level.WARNING, msg);
+                            return msg;
+                        } catch (ExecutionException e) {
+                            rf.cancel(true);
+                            String msg = "System prerequisite '" + rule.getName()
+                                    + "' failed on node: " + nodeName;
+                            Throwable cause = e.getCause();
+                            LOGGER.log(Level.WARNING, msg
+                                    + (cause != null ? " (cause: " + cause + ")" : ""), e);
+                            return msg;
+                        }
+                    } else {
+                        passed = runLocal(rule.getScript(), variables);
+                    }
                 }
+            } else {
+                // Shell / Windows Batch: run the script as a process on the target node.
+                String reason = runInterpreterOnNode(rule.getScript(), interpreter, node, rule.getName(), nodeName);
+                if (reason != null) {
+                    return reason;
+                }
+                passed = true;
             }
 
             if (!passed) {
@@ -204,6 +229,77 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
     private boolean runLocal(String script, Map<String, Object> variables) {
         GroovySandboxExecutor executor = new GroovySandboxExecutor(script, variables);
         return executor.call();
+    }
+
+    /**
+     * Run a Shell / Windows Batch prerequisite script <strong>as a process on the target node</strong>.
+     * Mirrors the job-level prerequisite execution: create the script file on the node, launch it,
+     * and enforce {@link #checkTimeoutSeconds} (killing the process on timeout).
+     *
+     * @return {@code null} if the script exits 0, otherwise a blocking reason string.
+     */
+    private String runInterpreterOnNode(String script, String interpreter, Node node, String ruleName, String nodeName) {
+        Computer computer = node.toComputer();
+        if (computer == null) {
+            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' is offline";
+        }
+        FilePath root = node.getRootPath();
+        if (root == null) {
+            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' root path unavailable";
+        }
+
+        CommandInterpreter ci = getCommandInterpreter(script, interpreter);
+        ExecutorService killPool = Executors.newSingleThreadExecutor();
+        try {
+            FilePath scriptFile = ci.createScriptFile(root);
+            String[] envs = buildNodeEnvironment(node);
+            hudson.Proc proc = node.createLauncher(NULL).launch()
+                    .cmds(ci.buildCommandLine(scriptFile))
+                    .envs(envs)
+                    .stdout(NULL).pwd(root).start();
+
+            Future<Integer> joinFuture = killPool.submit(new Callable<Integer>() {
+                public Integer call() throws Exception {
+                    return proc.join();
+                }
+            });
+
+            try {
+                int r = joinFuture.get(checkTimeoutSeconds, TimeUnit.SECONDS);
+                return r == 0 ? null : "System prerequisite '" + ruleName + "' not met on node: " + nodeName;
+            } catch (TimeoutException e) {
+                LOGGER.log(Level.WARNING, "Prerequisite check timed out on {0} after {1}s, killing process",
+                        new Object[]{nodeName, checkTimeoutSeconds});
+                try {
+                    proc.kill();
+                } catch (IOException killEx) {
+                    LOGGER.log(Level.WARNING, "Failed to kill timed-out process on {0}: {1}",
+                            new Object[]{nodeName, killEx.getMessage()});
+                } finally {
+                    joinFuture.cancel(true);
+                }
+                return "System prerequisite '" + ruleName + "' timed out on node: " + nodeName
+                        + " (timeout: " + checkTimeoutSeconds + "s)";
+            } catch (ExecutionException e) {
+                LOGGER.log(Level.WARNING, "Prerequisite check failed on {0}: {1}",
+                        new Object[]{nodeName, e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
+                return "System prerequisite '" + ruleName + "' failed on node: " + nodeName;
+            } finally {
+                killPool.shutdownNow();
+            }
+        } catch (IOException | InterruptedException e) {
+            LOGGER.log(Level.WARNING, "Failed to launch prerequisite check on {0}: {1}",
+                    new Object[]{nodeName, e.getMessage()});
+            return "System prerequisite '" + ruleName + "' failed to launch on node: " + nodeName
+                    + " (" + e.getMessage() + ")";
+        }
+    }
+
+    private CommandInterpreter getCommandInterpreter(String script, String interpreter) {
+        if (SystemPrerequisiteRule.INTERP_WINDOWS.equals(interpreter)) {
+            return new BatchFile(script);
+        }
+        return new Shell(script);
     }
 
     private Map<String, Object> buildBinding(Node node, String nodeName) {
@@ -236,6 +332,78 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
         vars.put("NODE_LABELS", labels.toString());
 
         return vars;
+    }
+
+    /**
+     * Build environment variables exposed to a Shell / Batch prerequisite script
+     * (NODE_NAME, NODE_HOSTNAME, NODE_IP, NODE_LABELS). Mirrors the job-level
+     * prerequisite environment so scripts can rely on the same values.
+     */
+    private String[] buildNodeEnvironment(Node node) {
+        List<String> envs = new ArrayList<>();
+
+        String nodeName = node.getNodeName();
+        if (nodeName == null || nodeName.isEmpty()) {
+            nodeName = "Built-In";
+        }
+        envs.add("NODE_NAME=" + nodeName);
+
+        String hostName = "";
+        String hostIp = "";
+        try {
+            Computer computer = node.toComputer();
+            if (computer != null) {
+                VirtualChannel channel = computer.getChannel();
+                if (channel != null) {
+                    // Remote agent - retrieve hostname and IP from the agent itself.
+                    String[] nodeInfo = channel.call(new NodeInfoCallable());
+                    hostName = nodeInfo[0];
+                    hostIp = nodeInfo[1];
+                } else {
+                    // Built-in node (no channel) - retrieve locally.
+                    InetAddress addr = InetAddress.getLocalHost();
+                    hostName = addr.getHostName();
+                    hostIp = addr.getHostAddress();
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to get node host info for {0}: {1}",
+                    new Object[]{nodeName, e.getMessage()});
+        }
+        envs.add("NODE_HOSTNAME=" + hostName);
+        envs.add("NODE_IP=" + hostIp);
+
+        StringBuilder labels = new StringBuilder();
+        Set<LabelAtom> assignedLabels = node.getAssignedLabels();
+        if (assignedLabels != null) {
+            for (LabelAtom label : assignedLabels) {
+                if (labels.length() > 0) {
+                    labels.append(" ");
+                }
+                labels.append(label.getName());
+            }
+        }
+        envs.add("NODE_LABELS=" + labels.toString());
+
+        return envs.toArray(new String[0]);
+    }
+
+    /**
+     * Callable executed on the remote agent to retrieve its hostname and IP address.
+     */
+    private static class NodeInfoCallable implements hudson.remoting.Callable<String[], IOException> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String[] call() throws IOException {
+            InetAddress addr = InetAddress.getLocalHost();
+            return new String[]{addr.getHostName(), addr.getHostAddress()};
+        }
+
+        @Override
+        public void checkRoles(RoleChecker checker) throws SecurityException {
+            // No privileged operation beyond reading the agent hostname/IP.
+        }
     }
 
     @Override

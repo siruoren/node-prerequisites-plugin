@@ -17,8 +17,10 @@
 
 package com.cloudbees.plugins;
 
+import hudson.model.Descriptor;
 import hudson.model.Node;
 import hudson.model.labels.LabelAtom;
+import hudson.util.ListBoxModel;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 
@@ -43,12 +45,18 @@ public class SystemPrerequisiteRule {
     public static final String MODE_LABELS = "labels";
     public static final String MODE_REGEX = "regex";
 
+    /** Command interpreter identifiers (values match {@code JobPrerequisites}). */
+    public static final String INTERP_SHELL = "shell script";
+    public static final String INTERP_WINDOWS = "windows batch command";
+    public static final String INTERP_GROOVY = "groovy script";
+
     private final String name;
     private final String script;
     private String nodeSelectionMode = MODE_ALL;
     private String nodeLabels = "";
     private String nodePattern = "";
     private boolean sandbox = true;
+    private String interpreter = INTERP_GROOVY;
 
     @DataBoundConstructor
     public SystemPrerequisiteRule(String name, String script) {
@@ -62,6 +70,15 @@ public class SystemPrerequisiteRule {
 
     public String getScript() {
         return script;
+    }
+
+    public String getInterpreter() {
+        return interpreter;
+    }
+
+    @DataBoundSetter
+    public void setInterpreter(String interpreter) {
+        this.interpreter = interpreter;
     }
 
     public String getNodeSelectionMode() {
@@ -148,5 +165,21 @@ public class SystemPrerequisiteRule {
         }
 
         return true;
+    }
+
+    @Extension
+    public static class DescriptorImpl extends Descriptor<SystemPrerequisiteRule> {
+
+        @Override
+        public String getDisplayName() {
+            return "System Prerequisite Rule";
+        }
+
+        public ListBoxModel doFillInterpreterItems() {
+            return new ListBoxModel()
+                    .add("Shell Script", INTERP_SHELL)
+                    .add("Windows Batch Command", INTERP_WINDOWS)
+                    .add("Groovy Script", INTERP_GROOVY);
+        }
     }
 }
