@@ -1,1 +1,4 @@
 **/.trae-html-share-packages/**
+**/.workbuddy/**
+**/.vscode/**
+**/node_modules/**

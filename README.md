@@ -4,7 +4,7 @@
 
 Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job 于某个节点上运行之前，先在该节点上执行一个前置检查脚本。如果脚本返回非零退出码，该节点将被跳过，Jenkins 会尝试将 Job 分配到其他符合条件的节点，或者将 Job 放回构建队列等待合适的节点。
 
-本插件基于 Jenkins 2.277.5 版本开发，支持两层前置条件检查体系：
+本插件基于 Jenkins 2.277.4 版本开发，支持两层前置条件检查体系：
 
 - **系统级检查**：全局配置的 Groovy 沙盒脚本，通过 Jenkins Remoting 在目标节点上执行，优先于任务级检查
 - **任务级检查**：Job 级别配置的 Shell/Windows/Groovy 脚本，在目标节点上执行
@@ -334,12 +334,12 @@ git push origin v1.2
 
 | 插件版本 | Jenkins 版本 | 说明 |
 |----------|-------------|------|
-| 1.2 | 2.277.5+ | 新增节点环境变量注入、Groovy 解释器、系统级前置检查 |
+| 1.2 | 2.277.4+ | 新增节点环境变量注入、Groovy 解释器、系统级前置检查 |
 | 1.1 | 1.452+ | 原始版本，基础前置检查功能 |
 
 ### 依赖
 
-- Jenkins Core: 2.277.5
+- Jenkins Core: 2.277.4
 - Matrix Project Plugin: 1.18+
 - FindBugs JSR305: 3.0.2
 - Java: 8+
