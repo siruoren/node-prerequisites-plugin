@@ -18,10 +18,12 @@
 package com.cloudbees.plugins;
 
 import hudson.Extension;
+import hudson.model.Describable;
 import hudson.model.Descriptor;
 import hudson.model.Node;
 import hudson.model.labels.LabelAtom;
 import hudson.util.ListBoxModel;
+import jenkins.model.Jenkins;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 
@@ -38,7 +40,7 @@ import java.util.regex.Pattern;
  * mode (all nodes, label-matched nodes, or regex-matched nodes), and optional
  * label/pattern constraints.
  */
-public class SystemPrerequisiteRule {
+public class SystemPrerequisiteRule implements Describable<SystemPrerequisiteRule> {
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisiteRule.class.getName());
 
@@ -71,6 +73,11 @@ public class SystemPrerequisiteRule {
 
     public String getScript() {
         return script;
+    }
+
+    @Override
+    public Descriptor<SystemPrerequisiteRule> getDescriptor() {
+        return Jenkins.get().getDescriptorOrDie(SystemPrerequisiteRule.class);
     }
 
     public String getInterpreter() {
