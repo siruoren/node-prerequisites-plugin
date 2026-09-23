@@ -17,6 +17,7 @@
 
 package com.cloudbees.plugins;
 
+import hudson.Extension;
 import hudson.model.Descriptor;
 import hudson.model.Node;
 import hudson.model.labels.LabelAtom;
