@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
   ~ Copyright (C) 2012 CloudBees Inc.
   ~
@@ -12,31 +13,35 @@
   ~ Lesser General Public License for more details.
   ~
   ~ You should have received a copy of the GNU Lesser General Public
-  ~ along with this program; if not, see <http://www.gnu.org/licenses />.
+  ~ License along with this program; if not, see
+  ~ <http://www.gnu.org/licenses/>.
   -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
 	<modelVersion>4.0.0</modelVersion>
+
 	<parent>
 		<groupId>org.jenkins-ci.plugins</groupId>
 		<artifactId>plugin</artifactId>
-        <version>1.452</version> <!-- need 1ac4872ecdc500c63c0dbfce5e4beb5ce78369e5 -->
+		<version>4.18</version>
+		<relativePath />
 	</parent>
 
 	<artifactId>slave-prerequisites</artifactId>
-	<name>Slave Prerequisites plugin</name>
-	<version>1.1-SNAPSHOT</version>
+	<version>1.2-SNAPSHOT</version>
 	<packaging>hpi</packaging>
-	<description>Run a script on slave node before letting a Job run on it, to check for prerequisites.</description>
-	<url>https://wiki.jenkins-ci.org/display/JENKINS/Slave+Prerequisites+Plugin</url>
+
+	<name>Node Prerequisites Plugin</name>
+	<description>Run a script on a node before letting a Job run on it, to check for prerequisites. Supports environment variables like NODE_NAME, NODE_IP, NODE_HOSTNAME.</description>
+	<url>https://github.com/jenkinsci/slave-prerequisites-plugin</url>
 	<inceptionYear>2012</inceptionYear>
 
-    <licenses>
-        <license>
-            <name>LGPL 3</name>
-            <url>http://www.gnu.org/licenses/lgpl.html</url>
-            <distribution>repo</distribution>
-        </license>
-    </licenses>
+	<licenses>
+		<license>
+			<name>LGPL 3</name>
+			<url>https://www.gnu.org/licenses/lgpl.html</url>
+			<distribution>repo</distribution>
+		</license>
+	</licenses>
 
 	<developers>
 		<developer>
@@ -48,26 +53,43 @@
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<jenkins.version>2.277.5</jenkins.version>
+		<java.level>8</java.level>
 	</properties>
+
 	<scm>
 		<connection>scm:git:git://github.com/jenkinsci/slave-prerequisites-plugin.git</connection>
 		<developerConnection>scm:git:ssh://git@github.com/jenkinsci/slave-prerequisites-plugin.git</developerConnection>
 		<url>https://github.com/jenkinsci/slave-prerequisites-plugin</url>
 	</scm>
 
-    <repositories>
-        <repository>
-            <id>repo.jenkins-ci.org</id>
-            <url>http://repo.jenkins-ci.org/public/</url>
-        </repository>
-    </repositories>
+	<repositories>
+		<repository>
+			<id>repo.jenkins-ci.org</id>
+			<url>https://repo.jenkins-ci.org/public/</url>
+		</repository>
+	</repositories>
 
-    <pluginRepositories>
-        <pluginRepository>
-            <id>repo.jenkins-ci.org</id>
-            <url>http://repo.jenkins-ci.org/public/</url>
-        </pluginRepository>
-    </pluginRepositories>
-</project>  
-  
+	<pluginRepositories>
+		<pluginRepository>
+			<id>repo.jenkins-ci.org</id>
+			<url>https://repo.jenkins-ci.org/public/</url>
+		</pluginRepository>
+	</pluginRepositories>
 
+	<dependencies>
+		<dependency>
+			<groupId>org.jenkins-ci.plugins</groupId>
+			<artifactId>matrix-project</artifactId>
+			<version>1.18</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.google.code.findbugs</groupId>
+			<artifactId>jsr305</artifactId>
+			<version>3.0.2</version>
+			<scope>provided</scope>
+		</dependency>
+	</dependencies>
+
+</project>

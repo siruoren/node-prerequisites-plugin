@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright (C) 2012 CloudBees Inc.
+  ~
+  ~ This program is free software; you can redistribute it and/or
+  ~ modify it under the terms of the GNU Lesser General Public
+  ~ as published by the Free Software Foundation; either version 3
+  ~ of the License, or (at your option) any later version.
+  ~
+  ~ This program is distributed in the hope that it will be useful,
+  ~ but WITHOUT ANY WARRANTY; without even the implied warranty of
+  ~ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+  ~ Lesser General Public License for more details.
+  ~
+  ~ You should have received a copy of the GNU Lesser General Public
+  ~ License along with this program; if not, see
+  ~ <http://www.gnu.org/licenses/>.
+  -->
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:f="/lib/form">
+
+  <f:section title="System Prerequisites">
+    <f:section title="System Prerequisite Rules">
+
+      <f:entry title="Description">
+        <div>
+          Define system-level prerequisite rules that run <strong>on the target node</strong>
+          via Jenkins Remoting, <strong>before</strong> job-level prerequisites. Rules default
+          to Groovy sandbox execution. Use node selection to target specific nodes by labels
+          or name regex.
+        </div>
+      </f:entry>
+
+      <f:entry title="Retry Count" field="retryCount" help="/plugin/slave-prerequisites/help-retryCount.html">
+        <f:number field="retryCount" default="3" />
+      </f:entry>
+
+      <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="/plugin/slave-prerequisites/help-retryInterval.html">
+        <f:number field="retryIntervalSeconds" default="30" />
+      </f:entry>
+
+      <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="/plugin/slave-prerequisites/help-checkTimeout.html">
+        <f:number field="checkTimeoutSeconds" default="60" />
+      </f:entry>
+
+      <f:entry title="Rules" field="rules">
+        <f:repeatable var="rule" items="${instance.rules}" noPre="0">
+          <table width="100%">
+            <f:entry title="Rule Name" field="name">
+              <f:textbox field="name" />
+            </f:entry>
+
+            <f:entry title="Node Selection" field="nodeSelectionMode">
+              <select name="nodeSelectionMode">
+                <option value="all">All nodes</option>
+                <option value="labels">Match by labels</option>
+                <option value="regex">Match by name regex</option>
+              </select>
+            </f:entry>
+
+            <f:entry title="Node Labels" field="nodeLabels" help="/plugin/slave-prerequisites/help-nodeLabels.html">
+              <f:textbox field="nodeLabels" />
+            </f:entry>
+
+            <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="/plugin/slave-prerequisites/help-nodePattern.html">
+              <f:textbox field="nodePattern" />
+            </f:entry>
+
+            <f:entry title="Groovy Sandbox" field="sandbox">
+              <f:checkbox field="sandbox" default="true" />
+            </f:entry>
+
+            <f:entry title="Script" field="script" help="/plugin/slave-prerequisites/help-system-script.html">
+              <f:textarea field="script" />
+            </f:entry>
+
+            <f:entry>
+              <div align="right">
+                <f:repeatableDeleteButton />
+              </div>
+            </f:entry>
+          </table>
+        </f:repeatable>
+      </f:entry>
+
+    </f:section>
+  </f:section>
+
+</j:jelly>

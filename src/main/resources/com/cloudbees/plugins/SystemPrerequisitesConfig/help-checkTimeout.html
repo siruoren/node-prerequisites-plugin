@@ -1,0 +1,14 @@
+<div>
+    Maximum time in seconds to wait for a prerequisite check script to complete.
+    If the check exceeds this duration, the process is <strong>killed</strong> to
+    prevent zombie process accumulation, and the node is blocked.
+    <br/><br/>
+    This timeout applies to both:
+    <ul>
+        <li><strong>System-level</strong> Groovy sandbox scripts (executed via Remoting)</li>
+        <li><strong>Job-level</strong> Shell/Batch/Groovy scripts (executed via Launcher)</li>
+    </ul>
+    Set to <code>0</code> to disable timeout (not recommended).
+    <br/>
+    Default: <code>60</code> seconds
+</div>

@@ -21,21 +21,20 @@ import hudson.model.Node;
 import hudson.model.queue.CauseOfBlockage;
 
 /**
- * Cause of blockage to track a node can't execute a job because the prerequisites
- * this one defines aren't met.
- *
- * @author: <a hef="mailto:nicolas.deloof@gmail.com">Nicolas De Loof</a>
+ * Cause of blockage when a system-level prerequisite rule rejects a node.
  */
-public class BecausePrerequisitesArentMet extends CauseOfBlockage {
+public class BecauseSystemPrerequisitesArentMet extends CauseOfBlockage {
 
     public final Node node;
+    public final String reason;
 
-    public BecausePrerequisitesArentMet(Node node) {
+    public BecauseSystemPrerequisitesArentMet(Node node, String reason) {
         this.node = node;
+        this.reason = reason;
     }
 
     @Override
     public String getShortDescription() {
-        return "Job prerequisites are not met";
+        return reason;
     }
 }

@@ -1,6 +1,6 @@
 <!--
   ~ Copyright (C) 2012 CloudBees Inc.
-  ~  
+  ~
   ~ This program is free software; you can redistribute it and/or
   ~ modify it under the terms of the GNU Lesser General Public
   ~ as published by the Free Software Foundation; either version 3
@@ -12,11 +12,25 @@
   ~ Lesser General Public License for more details.
   ~
   ~ You should have received a copy of the GNU Lesser General Public
-  ~ along with this program; if not, see <http://www.gnu.org/licenses/>.
+  ~ License along with this program; if not, see
+  ~ <http://www.gnu.org/licenses/>.
   -->
-
 <p>
-    Set a script to be run on slave node before the job can run on them. If returning a non 0 status, the node
-    will be vetoed for job execution, and either another node will be choosen, eihter the job will get back to
-    build queue waiting for an available node to match its prerequisites.
+    Set a script to be run on a node before the job can run on it. If the script returns a non-zero
+    exit code, the node will be vetoed for job execution, and either another node will be chosen,
+    or the job will be sent back to the build queue waiting for an available node that matches its
+    prerequisites.
 </p>
+<p>
+    The following environment variables are available in the prerequisite script:
+</p>
+<dl>
+    <dt><code>NODE_NAME</code></dt>
+    <dd>The name of the node (e.g. <code>agent-01</code>, <code>Built-In</code>).</dd>
+    <dt><code>NODE_HOSTNAME</code></dt>
+    <dd>The hostname of the node as reported by the operating system.</dd>
+    <dt><code>NODE_IP</code></dt>
+    <dd>The IP address of the node.</dd>
+    <dt><code>NODE_LABELS</code></dt>
+    <dd>Space-separated list of labels assigned to the node.</dd>
+</dl>

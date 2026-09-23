@@ -17,25 +17,26 @@
 
 package com.cloudbees.plugins;
 
-import hudson.model.Node;
-import hudson.model.queue.CauseOfBlockage;
+import hudson.FilePath;
+import hudson.tasks.CommandInterpreter;
 
 /**
- * Cause of blockage to track a node can't execute a job because the prerequisites
- * this one defines aren't met.
- *
- * @author: <a hef="mailto:nicolas.deloof@gmail.com">Nicolas De Loof</a>
+ * Command interpreter for Groovy scripts.
+ * Requires the {@code groovy} command to be available on the node's PATH.
  */
-public class BecausePrerequisitesArentMet extends CauseOfBlockage {
+public class GroovyScript extends CommandInterpreter {
 
-    public final Node node;
-
-    public BecausePrerequisitesArentMet(Node node) {
-        this.node = node;
+    public GroovyScript(String command) {
+        super(command);
     }
 
     @Override
-    public String getShortDescription() {
-        return "Job prerequisites are not met";
+    public String[] buildCommandLine(FilePath script) {
+        return new String[]{"groovy", script.getRemote()};
+    }
+
+    @Override
+    protected String getExtension() {
+        return ".groovy";
     }
 }

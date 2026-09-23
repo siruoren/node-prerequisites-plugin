@@ -1,0 +1,14 @@
+<div>
+    Define system-level prerequisite rules that run <strong>on the target node</strong>
+    via Jenkins Remoting, <strong>before</strong> job-level prerequisites.
+    <br/><br/>
+    Rules default to Groovy sandbox execution. Each rule can target specific nodes
+    by label matching or name regex. The script receives these bindings:
+    <ul>
+        <li><code>NODE_NAME</code> &ndash; the name of the node</li>
+        <li><code>NODE_HOSTNAME</code> &ndash; hostname resolved on the node</li>
+        <li><code>NODE_IP</code> &ndash; IP address resolved on the node</li>
+        <li><code>NODE_LABELS</code> &ndash; space-separated labels assigned to the node</li>
+    </ul>
+    Return <code>true</code> to pass, <code>false</code> to block the node.
+</div>
