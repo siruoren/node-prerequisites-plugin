@@ -36,7 +36,7 @@ public class GroovyScript extends CommandInterpreter {
     }
 
     @Override
-    protected String getExtension() {
+    public String getFileExtension() {
         return ".groovy";
     }
 }

@@ -251,7 +251,7 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
             CauseOfBlockage.fromMessage(Messages._JobPrerequisitesChecker_CheckingJobPrerequisites());
 
     private String key(Queue.Item item, Node node) {
-        return String.valueOf(item.id)+":"+node.getNodeName();
+        return String.valueOf(item.getId())+":"+node.getNodeName();
     }
 
     private JobPrerequisites getPrerequisite(Queue.BuildableItem item) {

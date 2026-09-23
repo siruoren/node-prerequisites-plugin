@@ -23,6 +23,7 @@ import hudson.model.Computer;
 import hudson.model.Node;
 import hudson.model.labels.LabelAtom;
 import hudson.remoting.Channel;
+import hudson.remoting.VirtualChannel;
 import jenkins.model.GlobalConfiguration;
 import net.sf.json.JSONObject;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -156,7 +157,7 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
             if (computer == null) {
                 passed = runLocal(rule.getScript(), variables);
             } else {
-                Channel channel = computer.getChannel();
+                VirtualChannel channel = computer.getChannel();
                 if (channel != null) {
                     GroovySandboxExecutor executor = new GroovySandboxExecutor(rule.getScript(), variables);
                     hudson.remoting.Future<Boolean> rf = channel.callAsync(executor);

@@ -22,6 +22,8 @@ import hudson.FilePath;
 import hudson.model.*;
 import hudson.model.queue.CauseOfBlockage;
 import hudson.remoting.Channel;
+import hudson.remoting.VirtualChannel;
+import hudson.model.labels.LabelAtom;
 import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
 import hudson.tasks.Shell;
@@ -163,7 +165,7 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
         try {
             Computer computer = node.toComputer();
             if (computer != null) {
-                Channel channel = computer.getChannel();
+                VirtualChannel channel = computer.getChannel();
                 if (channel != null) {
                     // Remote agent - retrieve hostname and IP from the agent itself
                     String[] nodeInfo = channel.call(new NodeInfoCallable());
@@ -185,7 +187,7 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
 
         // NODE_LABELS
         StringBuilder labels = new StringBuilder();
-        Set<Label> assignedLabels = node.getAssignedLabels();
+        Set<LabelAtom> assignedLabels = node.getAssignedLabels();
         if (assignedLabels != null) {
             for (Label label : assignedLabels) {
                 if (labels.length() > 0) {
@@ -202,7 +204,7 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
     /**
      * Callable executed on the remote agent to retrieve its hostname and IP address.
      */
-    private static class NodeInfoCallable extends hudson.remoting.Callable<String[], IOException> {
+    private static class NodeInfoCallable implements hudson.remoting.Callable<String[], IOException> {
         private static final long serialVersionUID = 1L;
 
         @Override
