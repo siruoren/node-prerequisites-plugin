@@ -38,6 +38,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
@@ -175,6 +176,14 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
                         String msg = "System prerequisite '" + rule.getName()
                                 + "' was interrupted on node: " + nodeName;
                         LOGGER.log(Level.WARNING, msg);
+                        return msg;
+                    } catch (ExecutionException e) {
+                        rf.cancel(true);
+                        String msg = "System prerequisite '" + rule.getName()
+                                + "' failed on node: " + nodeName;
+                        Throwable cause = e.getCause();
+                        LOGGER.log(Level.WARNING, msg
+                                + (cause != null ? " (cause: " + cause + ")" : ""), e);
                         return msg;
                     }
                 } else {
