@@ -3,7 +3,7 @@
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * as published by the Free Software Foundation; either version 3
+ * License as published by the Free Software Foundation; either version 3
  * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
@@ -12,7 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this program; if not, see
+ * <http://www.gnu.org/licenses/>.
  */
 
 package com.cloudbees.plugins;
@@ -142,13 +143,34 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
 
     /**
      * Run all applicable system-level rules against the given node.
-     * Each rule's Groovy script is executed <strong>on the node itself</strong>
-     * via Jenkins Remoting ({@link Channel#call}).
+     * Convenience overload that omits the task name in logs.
      *
      * @param node the target node
      * @return {@code null} if all rules pass, a blocking reason string if any rule fails
+     * @see #checkNode(Node, String)
      */
     public String checkNode(Node node) throws IOException, InterruptedException {
+        return checkNode(node, null);
+    }
+
+    /**
+     * Append the task name to a log message for traceability in the Jenkins log.
+     */
+    private static String taskSuffix(String taskName) {
+        return (taskName != null && !taskName.isEmpty()) ? " [task: " + taskName + "]" : "";
+    }
+
+    /**
+     * Run all applicable system-level rules against the given node.
+     * Each rule's Groovy script is executed <strong>on the node itself</strong>
+     * via Jenkins Remoting ({@link Channel#call}).
+     *
+     * @param node     the target node
+     * @param taskName the name of the queued task (job) this check is being run for;
+     *                included in log messages for traceability (may be {@code null})
+     * @return {@code null} if all rules pass, a blocking reason string if any rule fails
+     */
+    public String checkNode(Node node, String taskName) throws IOException, InterruptedException {
         if (rules == null || rules.isEmpty()) {
             return null;
         }
@@ -185,19 +207,21 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
                             rf.cancel(true);
                             String msg = "System prerequisite '" + rule.getName()
                                     + "' timed out on node: " + nodeName
-                                    + " (timeout: " + checkTimeoutSeconds + "s)";
+                                    + " (timeout: " + checkTimeoutSeconds + "s)"
+                                    + taskSuffix(taskName);
                             LOGGER.log(Level.WARNING, msg);
                             return msg;
                         } catch (InterruptedException e) {
                             rf.cancel(true);
                             String msg = "System prerequisite '" + rule.getName()
-                                    + "' was interrupted on node: " + nodeName;
+                                    + "' was interrupted on node: " + nodeName
+                                    + taskSuffix(taskName);
                             LOGGER.log(Level.WARNING, msg);
                             return msg;
                         } catch (ExecutionException e) {
                             rf.cancel(true);
                             String msg = "System prerequisite '" + rule.getName()
-                                    + "' failed on node: " + nodeName;
+                                    + "' failed on node: " + nodeName + taskSuffix(taskName);
                             Throwable cause = e.getCause();
                             LOGGER.log(Level.WARNING, msg
                                     + (cause != null ? " (cause: " + cause + ")" : ""), e);
@@ -209,7 +233,7 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
                 }
             } else {
                 // Shell / Windows Batch: run the script as a process on the target node.
-                String reason = runInterpreterOnNode(rule.getScript(), interpreter, node, rule.getName(), nodeName);
+                String reason = runInterpreterOnNode(rule.getScript(), interpreter, node, rule.getName(), nodeName, taskName);
                 if (reason != null) {
                     return reason;
                 }
@@ -218,7 +242,7 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
 
             if (!passed) {
                 String msg = "System prerequisite '" + rule.getName()
-                        + "' not met on node: " + nodeName;
+                        + "' not met on node: " + nodeName + taskSuffix(taskName);
                 LOGGER.log(Level.INFO, msg);
                 return msg;
             }
@@ -238,14 +262,17 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
      *
      * @return {@code null} if the script exits 0, otherwise a blocking reason string.
      */
-    private String runInterpreterOnNode(String script, String interpreter, Node node, String ruleName, String nodeName) {
+    private String runInterpreterOnNode(String script, String interpreter, Node node, String ruleName, String nodeName, String taskName) {
+        final String safeTask = (taskName != null && !taskName.isEmpty()) ? taskName : "<unknown>";
         Computer computer = node.toComputer();
         if (computer == null) {
-            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' is offline";
+            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' is offline"
+                    + taskSuffix(safeTask);
         }
         FilePath root = node.getRootPath();
         if (root == null) {
-            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' root path unavailable";
+            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' root path unavailable"
+                    + taskSuffix(safeTask);
         }
 
         CommandInterpreter ci = getCommandInterpreter(script, interpreter);
@@ -266,32 +293,34 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
 
             try {
                 int r = joinFuture.get(checkTimeoutSeconds, TimeUnit.SECONDS);
-                return r == 0 ? null : "System prerequisite '" + ruleName + "' not met on node: " + nodeName;
+                return r == 0 ? null : "System prerequisite '" + ruleName + "' not met on node: " + nodeName
+                        + taskSuffix(safeTask);
             } catch (TimeoutException e) {
-                LOGGER.log(Level.WARNING, "Prerequisite check timed out on {0} after {1}s, killing process",
-                        new Object[]{nodeName, checkTimeoutSeconds});
+                LOGGER.log(Level.WARNING, "Prerequisite check timed out for task {0} on {1} after {2}s, killing process",
+                        new Object[]{safeTask, nodeName, checkTimeoutSeconds});
                 try {
                     proc.kill();
                 } catch (IOException killEx) {
-                    LOGGER.log(Level.WARNING, "Failed to kill timed-out process on {0}: {1}",
-                            new Object[]{nodeName, killEx.getMessage()});
+                    LOGGER.log(Level.WARNING, "Failed to kill timed-out process for task {0} on {1}: {2}",
+                            new Object[]{safeTask, nodeName, killEx.getMessage()});
                 } finally {
                     joinFuture.cancel(true);
                 }
                 return "System prerequisite '" + ruleName + "' timed out on node: " + nodeName
-                        + " (timeout: " + checkTimeoutSeconds + "s)";
+                        + " (timeout: " + checkTimeoutSeconds + "s)" + taskSuffix(safeTask);
             } catch (ExecutionException e) {
-                LOGGER.log(Level.WARNING, "Prerequisite check failed on {0}: {1}",
-                        new Object[]{nodeName, e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
-                return "System prerequisite '" + ruleName + "' failed on node: " + nodeName;
+                LOGGER.log(Level.WARNING, "Prerequisite check failed for task {0} on {1}: {2}",
+                        new Object[]{safeTask, nodeName, e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
+                return "System prerequisite '" + ruleName + "' failed on node: " + nodeName
+                        + taskSuffix(safeTask);
             } finally {
                 killPool.shutdownNow();
             }
         } catch (IOException | InterruptedException e) {
-            LOGGER.log(Level.WARNING, "Failed to launch prerequisite check on {0}: {1}",
-                    new Object[]{nodeName, e.getMessage()});
+            LOGGER.log(Level.WARNING, "Failed to launch prerequisite check for task {0} on {1}: {2}",
+                    new Object[]{safeTask, nodeName, e.getMessage()});
             return "System prerequisite '" + ruleName + "' failed to launch on node: " + nodeName
-                    + " (" + e.getMessage() + ")";
+                    + " (" + e.getMessage() + ")" + taskSuffix(safeTask);
         }
     }
 

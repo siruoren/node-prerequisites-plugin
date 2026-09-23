@@ -3,7 +3,7 @@
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * as published by the Free Software Foundation; either version 3
+ * License as published by the Free Software Foundation; either version 3
  * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
@@ -12,7 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this program; if not, see
+ * <http://www.gnu.org/licenses/>.
  */
 
 package com.cloudbees.plugins;
@@ -66,19 +67,24 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     @Override
     public CauseOfBlockage canTake(final Node node, Queue.BuildableItem item) {
 
+        // Name of the queued task (job) this check is being run for, so that every
+        // prerequisite execution log line can be traced back to its task in the Jenkins log.
+        String taskName = (item.task != null && item.task.getName() != null)
+                ? item.task.getName() : "<unknown>";
+
         // --- Phase 1: System-level checks (run first, on the node) ---
         String sysKey = "sys:" + key(item, node);
         CauseOfBlockage sysBlockage = runWithRetry(sysKey, node, new CheckTask() {
-            public CauseOfBlockage execute() throws Exception {
+            public CauseOfBlockage execute(String taskName) throws Exception {
                 SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
                 if (config == null) return null;
-                String reason = config.checkNode(node);
+                String reason = config.checkNode(node, taskName);
                 if (reason != null) {
                     return new BecauseSystemPrerequisitesArentMet(node, reason);
                 }
                 return null;
             }
-        }, CHECKING_SYSTEM, "system");
+        }, CHECKING_SYSTEM, "system", taskName);
 
         if (sysBlockage != null) {
             return sysBlockage;
@@ -90,10 +96,10 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
         String jobKey = "job:" + key(item, node);
         return runWithRetry(jobKey, node, new CheckTask() {
-            public CauseOfBlockage execute() throws Exception {
-                return prerequisite.check(node);
+            public CauseOfBlockage execute(String taskName) throws Exception {
+                return prerequisite.check(node, taskName);
             }
-        }, CHECKING_JOB, "job");
+        }, CHECKING_JOB, "job", taskName);
     }
 
     /**
@@ -111,9 +117,11 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
      *     </ul>
      *   </li>
      * </ol>
+     *
+     * @param taskName name of the queued task (job) this check is for, included in logs
      */
     private CauseOfBlockage runWithRetry(String checkKey, final Node node, final CheckTask task,
-                                         CauseOfBlockage checkingMessage, String label) {
+                                         CauseOfBlockage checkingMessage, String label, String taskName) {
 
         int maxRetries = getRetryCount();
         long intervalMs = getRetryIntervalMillis();
@@ -145,13 +153,13 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
                 if (state.retryCount > maxRetries) {
                     // Max retries exceeded — permanent blockage
-                    LOGGER.log(Level.INFO, "[{0}] Max retries ({1}) exceeded for {2}, blocking permanently: {3}",
-                            new Object[]{label, maxRetries, node.getNodeName(), blockage.getClass().getSimpleName()});
+                    LOGGER.log(Level.INFO, "[{0}] Max retries ({1}) exceeded for task {2} on node {3}, blocking permanently: {4}",
+                            new Object[]{label, maxRetries, taskName, node.getNodeName(), blockage.getClass().getSimpleName()});
                     return blockage;
                 }
 
-                LOGGER.log(Level.INFO, "[{0}] Check failed for {1}, retry {2}/{3} in {4}s",
-                        new Object[]{label, node.getNodeName(), state.retryCount, maxRetries, intervalMs / 1000});
+                LOGGER.log(Level.INFO, "[{0}] Check failed for task {1} on node {2}, retry {3}/{4} in {5}s",
+                        new Object[]{label, taskName, node.getNodeName(), state.retryCount, maxRetries, intervalMs / 1000});
                 // Return waiting-for-retry blockage; next canTake call will re-check after interval
                 return CauseOfBlockage.fromMessage(
                         Messages._JobPrerequisitesChecker_WaitingForRetry(
@@ -186,7 +194,7 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
         }
 
         // Submit a fresh check
-        submitFuture(checkKey, task, label, node);
+        submitFuture(checkKey, task, label, node, taskName);
         return checkingMessage;
     }
 
@@ -208,14 +216,14 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     }
 
     private void submitFuture(final String checkKey, final CheckTask task,
-                              final String label, final Node node) {
+                              final String label, final Node node, final String taskName) {
         Callable<CauseOfBlockage> callable = new Callable<CauseOfBlockage>() {
             public CauseOfBlockage call() throws Exception {
                 try {
-                    return task.execute();
+                    return task.execute(taskName);
                 } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "[{0}] Check threw exception for {1}: {2}",
-                            new Object[]{label, node.getNodeName(), e.getMessage()});
+                    LOGGER.log(Level.WARNING, "[{0}] Check threw exception for task {1} on node {2}: {3}",
+                            new Object[]{label, taskName, node.getNodeName(), e.getMessage()});
                     if (label.equals("system")) {
                         return CauseOfBlockage.fromMessage(
                                 Messages._JobPrerequisitesChecker_FailedToCheckSystemProrequisites(e.getMessage()));
@@ -269,7 +277,7 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     // --- Helper interfaces and classes ---
 
     private interface CheckTask {
-        CauseOfBlockage execute() throws Exception;
+        CauseOfBlockage execute(String taskName) throws Exception;
     }
 
     /**

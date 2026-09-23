@@ -3,7 +3,7 @@
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * as published by the Free Software Foundation; either version 3
+ * License as published by the Free Software Foundation; either version 3
  * of the License, or (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
@@ -12,7 +12,8 @@
  * Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+ * License along with this program; if not, see
+ * <http://www.gnu.org/licenses/>.
  */
 
 package com.cloudbees.plugins;
@@ -78,9 +79,23 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
     }
 
     /**
-     * @return true if all prerequisites a met on the target Node
+     * @return null if prerequisites are met on the target Node, else a blockage
+     * @see #check(Node, String)
      */
     public CauseOfBlockage check(Node node) throws IOException, InterruptedException {
+        return check(node, null);
+    }
+
+    /**
+     * Run the job-level prerequisite script on the given node.
+     *
+     * @param node     the target node
+     * @param taskName the name of the queued task (job) this check is being run for;
+     *                included in log messages for traceability (may be {@code null})
+     * @return null if prerequisites are met on the target Node, else a blockage
+     */
+    public CauseOfBlockage check(Node node, String taskName) throws IOException, InterruptedException {
+        final String logTask = (taskName != null && !taskName.isEmpty()) ? taskName : "<unknown>";
         CommandInterpreter shell = getCommandInterpreter(this.script);
         FilePath root = node.getRootPath();
         if (root == null) return new CauseOfBlockage.BecauseNodeIsOffline(node); //offline ?
@@ -110,21 +125,21 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
             return r == 0 ? null : new BecausePrerequisitesArentMet(node);
         } catch (TimeoutException e) {
             // Kill the timed-out process to avoid zombie accumulation
-            LOGGER.log(Level.WARNING, "Prerequisite check timed out on {0} after {1}s, killing process",
-                    new Object[]{node.getNodeName(), timeoutSeconds});
+            LOGGER.log(Level.WARNING, "Prerequisite check timed out for task {0} on {1} after {2}s, killing process",
+                    new Object[]{logTask, node.getNodeName(), timeoutSeconds});
             try {
                 proc.kill();
             } catch (IOException killEx) {
-                LOGGER.log(Level.WARNING, "Failed to kill timed-out process on {0}: {1}",
-                        new Object[]{node.getNodeName(), killEx.getMessage()});
+                LOGGER.log(Level.WARNING, "Failed to kill timed-out process for task {0} on {1}: {2}",
+                        new Object[]{logTask, node.getNodeName(), killEx.getMessage()});
             } finally {
                 joinFuture.cancel(true);
             }
             return CauseOfBlockage.fromMessage(
                     Messages._JobPrerequisites_PrerequisiteCheckTimedOut(timeoutSeconds));
         } catch (java.util.concurrent.ExecutionException e) {
-            LOGGER.log(Level.WARNING, "Prerequisite check failed on {0}: {1}",
-                    new Object[]{node.getNodeName(), e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
+            LOGGER.log(Level.WARNING, "Prerequisite check failed for task {0} on {1}: {2}",
+                    new Object[]{logTask, node.getNodeName(), e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
             return new BecausePrerequisitesArentMet(node);
         } finally {
             killPool.shutdownNow();
