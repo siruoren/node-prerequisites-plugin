@@ -23,6 +23,7 @@ import hudson.model.*;
 import hudson.model.queue.CauseOfBlockage;
 import hudson.remoting.Channel;
 import hudson.remoting.VirtualChannel;
+import org.jenkinsci.remoting.RoleChecker;
 import hudson.model.labels.LabelAtom;
 import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
@@ -211,6 +212,11 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
         public String[] call() throws IOException {
             InetAddress addr = InetAddress.getLocalHost();
             return new String[]{addr.getHostName(), addr.getHostAddress()};
+        }
+
+        @Override
+        public void checkRoles(RoleChecker checker) throws SecurityException {
+            // No privileged operation beyond reading the agent hostname/IP.
         }
     }
 

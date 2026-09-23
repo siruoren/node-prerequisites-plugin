@@ -20,6 +20,7 @@ package com.cloudbees.plugins;
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
 import hudson.remoting.Callable;
+import org.jenkinsci.remoting.RoleChecker;
 import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.control.customizers.ImportCustomizer;
 import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
@@ -78,6 +79,11 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
         }
     }
 
+    @Override
+    public void checkRoles(RoleChecker checker) throws SecurityException {
+        // No privileged operation beyond evaluating the configured script on the agent.
+    }
+
     /**
      * Create a GroovyShell with sandbox restrictions.
      */
@@ -111,7 +117,7 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
                 "java.util.Arrays"
         ));
 
-        customizer.setIndirectImportCheckingEnabled(true);
+        customizer.setIndirectImportCheckEnabled(true);
 
         customizer.setReceiversBlackList(Arrays.asList(
                 System.class.getName(),
