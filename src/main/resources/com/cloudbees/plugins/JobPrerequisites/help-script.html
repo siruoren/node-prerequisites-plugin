@@ -12,10 +12,27 @@
   ~ Lesser General Public License for more details.
   ~
   ~ You should have received a copy of the GNU Lesser General Public
-  ~ along with this program; if not, see <http://www.gnu.org/licenses/>.
+  ~ License along with this program; if not, see
+  ~ <http://www.gnu.org/licenses/>.
   -->
-
 <div>
-    A script to be executed on slave node. If returning non 0 status, the node will be vetoed from hosting
-    the build.
+    A script to be executed on the node. If it returns a non-zero exit code, the node will be vetoed
+    from hosting the build.
+    <br/><br/>
+    The following environment variables are available in the script:
+    <ul>
+        <li><code>NODE_NAME</code> &ndash; the name of the node</li>
+        <li><code>NODE_HOSTNAME</code> &ndash; the hostname reported by the OS</li>
+        <li><code>NODE_IP</code> &ndash; the IP address of the node</li>
+        <li><code>NODE_LABELS</code> &ndash; space-separated labels assigned to the node</li>
+    </ul>
+    <br/>
+    Example (shell):<br/>
+    <pre>echo "Checking node: $NODE_NAME ($NODE_IP)"
+test -f /usr/bin/docker || exit 1</pre>
+    <br/>
+    Example (groovy):<br/>
+    <pre>println "Checking node: ${System.getenv('NODE_NAME')} (${System.getenv('NODE_IP')})"
+def docker = new File('/usr/bin/docker')
+if (!docker.exists()) System.exit(1)</pre>
 </div>

@@ -15,22 +15,33 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-package com.cloudbees.plugins.JobPrerequisites
+package com.cloudbees.plugins;
 
-import com.cloudbees.plugins.JobPrerequisites
-import static com.cloudbees.plugins.JobPrerequisites.SHELL_SCRIPT
+import hudson.FilePath;
+import hudson.tasks.CommandInterpreter;
 
-def f=namespace(lib.FormTagLib)
+/**
+ * Command interpreter for Groovy scripts.
+ * Requires the {@code groovy} command to be available on the node's PATH.
+ */
+public class GroovyScript extends CommandInterpreter {
 
-f.optionalBlock(title:_("Check job prerequisites"), name:"prerequisites",
-        checked:instance!=null, help:"/plugin/node-prerequisites/help.html") {
-    f.nested {
-        f.entry(field: "interpreter", default: SHELL_SCRIPT) {
-            f.select()
-        }
-        
-        f.entry(field: "script") {
-            f.textarea()
-        }
+    public GroovyScript(String command) {
+        super(command);
+    }
+
+    @Override
+    public String[] buildCommandLine(FilePath script) {
+        return new String[]{"groovy", script.getRemote()};
+    }
+
+    @Override
+    public String getFileExtension() {
+        return ".groovy";
+    }
+
+    @Override
+    protected String getContents() {
+        return command;
     }
 }

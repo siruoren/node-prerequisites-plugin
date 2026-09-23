@@ -21,7 +21,8 @@ import hudson.model.Node;
 import hudson.model.queue.CauseOfBlockage;
 
 /**
- * Cause of blockage to track a node can't execute a job because the prerequisites this ones define aren't met
+ * Cause of blockage to track a node can't execute a job because the prerequisites
+ * this one defines aren't met.
  *
  * @author: <a hef="mailto:nicolas.deloof@gmail.com">Nicolas De Loof</a>
  */

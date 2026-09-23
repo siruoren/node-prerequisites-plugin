@@ -1,0 +1,85 @@
+name: Build Extension
+
+on:
+  push:
+    branches:
+      - '*'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Derive version from branch
+        id: version
+        run: |
+          set -euo pipefail
+          # PR 事件用 head_ref（源分支），push/tag 事件用 ref_name
+          REF_NAME="${{ github.head_ref || github.ref_name }}"
+          echo "==> REF_NAME: $REF_NAME"
+          VERSION=""
+          # 1) tag vX.Y.Z -> X.Y.Z（发布，无 -SNAPSHOT）
+          if [[ "$REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          # 2) 分支名含语义版本 X.Y.Z -> X.Y.Z-SNAPSHOT
+          elif [[ "$REF_NAME" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            VERSION="${BASH_REMATCH[1]}-SNAPSHOT"
+          else
+            # 3) 兜底：<pom 基础版本>-<分支短名>-SNAPSHOT，避免不同分支产物互相覆盖
+            SLUG=$(echo "$REF_NAME" | tr '/' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-zA-Z0-9.-]//g')
+            POM_VER=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout 2>/dev/null | sed 's/-SNAPSHOT$//')
+            VERSION="${POM_VER}-${SLUG}-SNAPSHOT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "==> Version: $VERSION (来源: 分支 $REF_NAME)"
+
+      - name: Set version in pom.xml
+        run: mvn versions:set -DnewVersion="${{ steps.version.outputs.version }}" -DgenerateBackupPoms=false -B
+
+      - name: Build with Maven
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mvn clean package -B -DskipTests
+          mkdir -p dist
+          cp target/node-prerequisites.hpi "dist/node-prerequisites-v${VERSION}.hpi"
+          echo "==> 已生成: dist/node-prerequisites-v${VERSION}.hpi"
+
+      - name: Run tests
+        run: mvn test -B
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-prerequisites-v${{ steps.version.outputs.version }}
+          path: |
+            dist/*.hpi
+            target/node-prerequisites.hpi
+          retention-days: 90
+
+      - name: Create release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.hpi
+          generate_release_notes: true

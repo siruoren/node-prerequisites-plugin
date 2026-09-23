@@ -15,22 +15,26 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
-package com.cloudbees.plugins.JobPrerequisites
+package com.cloudbees.plugins;
 
-import com.cloudbees.plugins.JobPrerequisites
-import static com.cloudbees.plugins.JobPrerequisites.SHELL_SCRIPT
+import hudson.model.Node;
+import hudson.model.queue.CauseOfBlockage;
 
-def f=namespace(lib.FormTagLib)
+/**
+ * Cause of blockage when a system-level prerequisite rule rejects a node.
+ */
+public class BecauseSystemPrerequisitesArentMet extends CauseOfBlockage {
 
-f.optionalBlock(title:_("Check job prerequisites"), name:"prerequisites",
-        checked:instance!=null, help:"/plugin/node-prerequisites/help.html") {
-    f.nested {
-        f.entry(field: "interpreter", default: SHELL_SCRIPT) {
-            f.select()
-        }
-        
-        f.entry(field: "script") {
-            f.textarea()
-        }
+    public final Node node;
+    public final String reason;
+
+    public BecauseSystemPrerequisitesArentMet(Node node, String reason) {
+        this.node = node;
+        this.reason = reason;
+    }
+
+    @Override
+    public String getShortDescription() {
+        return reason;
     }
 }
