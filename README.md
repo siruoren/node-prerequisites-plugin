@@ -352,7 +352,7 @@ git push origin v1.2
 - **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制，跟踪每个检查的失败次数和重试时间
 - **`SystemPrerequisitesConfig`** — 全局配置类（`GlobalConfiguration`），存储系统级规则列表、重试次数（`retryCount`）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`），通过 `Channel.callAsync()` 在节点上执行 Groovy 沙盒检查
 - **`SystemPrerequisiteRule`** — 系统级规则数据类，包含脚本、节点选择模式（all/labels/regex）、标签、正则等配置
-- **`GroovySandboxExecutor`** — Groovy 沙盒执行器（`MasterToSlaveCallable`），可序列化，通过 Remoting Channel 发送到节点执行，使用 `SecureASTCustomizer` 限制危险操作
+- **`GroovySandboxExecutor`** — Groovy 沙盒执行器（`hudson.remoting.Callable`），可序列化，通过 Remoting Channel 发送到节点执行，使用 `SecureASTCustomizer` 限制危险操作
 - **`GroovyScript`** — 任务级 Groovy 解释器（`CommandInterpreter`），在节点上通过 `groovy` 命令执行
 - **`BecausePrerequisitesArentMet`** — 任务级阻塞原因对象
 - **`BecauseSystemPrerequisitesArentMet`** — 系统级阻塞原因对象

@@ -19,7 +19,7 @@ package com.cloudbees.plugins;
 
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
-import hudson.remoting.MasterToSlaveCallable;
+import hudson.remoting.Callable;
 import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.control.customizers.ImportCustomizer;
 import org.codehaus.groovy.control.customizers.SecureASTCustomizer;
@@ -35,7 +35,7 @@ import java.util.logging.Logger;
  * Executes Groovy scripts in a restricted sandbox environment
  * <strong>on the remote node</strong> via Jenkins Remoting.
  * <p>
- * Implements {@link MasterToSlaveCallable} so it can be sent through a
+ * Implements {@link Callable} so it can be sent through a
  * {@link hudson.remoting.Channel} to the agent JVM. All data it needs
  * (script source, bindings) is serializable.
  * <p>
@@ -48,7 +48,7 @@ import java.util.logging.Logger;
  * The script receives a {@link Binding} with node information variables.
  * If the script returns {@code false} (or throws), the prerequisite is not met.
  */
-public class GroovySandboxExecutor extends MasterToSlaveCallable<Boolean, RuntimeException>
+public class GroovySandboxExecutor extends Callable<Boolean, RuntimeException>
         implements Serializable {
 
     private static final long serialVersionUID = 1L;

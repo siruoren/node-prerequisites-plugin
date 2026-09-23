@@ -22,7 +22,6 @@ import hudson.FilePath;
 import hudson.model.*;
 import hudson.model.queue.CauseOfBlockage;
 import hudson.remoting.Channel;
-import hudson.remoting.MasterToSlaveCallable;
 import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
 import hudson.tasks.Shell;
@@ -203,7 +202,7 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
     /**
      * Callable executed on the remote agent to retrieve its hostname and IP address.
      */
-    private static class NodeInfoCallable extends MasterToSlaveCallable<String[], IOException> {
+    private static class NodeInfoCallable extends hudson.remoting.Callable<String[], IOException> {
         private static final long serialVersionUID = 1L;
 
         @Override
