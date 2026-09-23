@@ -31,15 +31,15 @@
         </div>
       </f:entry>
 
-      <f:entry title="Retry Count" field="retryCount" help="/plugin/slave-prerequisites/help-retryCount.html">
+      <f:entry title="Retry Count" field="retryCount" help="/plugin/node-prerequisites/help-retryCount.html">
         <f:number field="retryCount" default="3" />
       </f:entry>
 
-      <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="/plugin/slave-prerequisites/help-retryInterval.html">
+      <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="/plugin/node-prerequisites/help-retryInterval.html">
         <f:number field="retryIntervalSeconds" default="30" />
       </f:entry>
 
-      <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="/plugin/slave-prerequisites/help-checkTimeout.html">
+      <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="/plugin/node-prerequisites/help-checkTimeout.html">
         <f:number field="checkTimeoutSeconds" default="60" />
       </f:entry>
 
@@ -58,11 +58,11 @@
               </select>
             </f:entry>
 
-            <f:entry title="Node Labels" field="nodeLabels" help="/plugin/slave-prerequisites/help-nodeLabels.html">
+            <f:entry title="Node Labels" field="nodeLabels" help="/plugin/node-prerequisites/help-nodeLabels.html">
               <f:textbox field="nodeLabels" />
             </f:entry>
 
-            <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="/plugin/slave-prerequisites/help-nodePattern.html">
+            <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="/plugin/node-prerequisites/help-nodePattern.html">
               <f:textbox field="nodePattern" />
             </f:entry>
 
@@ -70,7 +70,7 @@
               <f:checkbox field="sandbox" default="true" />
             </f:entry>
 
-            <f:entry title="Script" field="script" help="/plugin/slave-prerequisites/help-system-script.html">
+            <f:entry title="Script" field="script" help="/plugin/node-prerequisites/help-system-script.html">
               <f:textarea field="script" />
             </f:entry>
 

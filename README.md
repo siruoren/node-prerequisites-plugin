@@ -280,7 +280,7 @@ println "All prerequisites met for ${System.getenv('NODE_NAME')}"
 mvn clean package
 ```
 
-生成的 HPI 插件包位于 `target/slave-prerequisites.hpi`。
+生成的 HPI 插件包位于 `target/node-prerequisites.hpi`。
 
 ### 本地调试
 
@@ -292,7 +292,7 @@ mvn hpi:run
 
 ### 安装插件
 
-1. 将 `target/slave-prerequisites.hpi` 上传到 Jenkins
+1. 将 `target/node-prerequisites.hpi` 上传到 Jenkins
 2. 进入 **Manage Jenkins > Manage Plugins > Advanced**
 3. 在 **Upload Plugin** 区域上传 HPI 文件
 4. 重启 Jenkins
