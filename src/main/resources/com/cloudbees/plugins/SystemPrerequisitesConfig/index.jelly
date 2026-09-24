@@ -17,108 +17,120 @@
   ~ <http://www.gnu.org/licenses/>.
   -->
 <?jelly escape-by-default='true'?>
-<j:jelly xmlns:j="jelly:core" xmlns:f="/lib/form">
+<j:jelly xmlns:j="jelly:core" xmlns:l="/lib/layout" xmlns:f="/lib/form">
 
-  <f:form method="post" action="configSubmit" name="config">
-    <f:section title="System Prerequisites">
-      <f:section title="System Prerequisite Rules">
+  <!--
+    MUST be wrapped in l:layout: a ManagementLink view is rendered verbatim by
+    Stapler (no automatic Jenkins chrome). Without l:layout the page has no CSS,
+    no hudson-behavior.js (help buttons dead, help areas stuck on the "Loading"
+    placeholder) and no crumb JS (form POST rejected by the CSRF filter).
+  -->
+  <l:layout title="${it.displayName}">
+    <l:main-panel>
 
-        <f:entry title="Description">
-          <div>
-            Define system-level prerequisite rules that run <strong>on the target node</strong>
-            via Jenkins Remoting, <strong>before</strong> job-level prerequisites. Each rule can
-            contain multiple execution scripts, and each script can target specific nodes via
-            fuzzy pattern matching on the node name. Use node selection to further filter which
-            nodes the rule applies to by labels or name regex.
-          </div>
-        </f:entry>
+      <f:form method="post" action="configSubmit" name="config">
+        <f:section title="System Prerequisites">
+          <f:section title="System Prerequisite Rules">
 
-        <f:entry title="Retry Count" field="retryCount" help="help?field=retryCount">
-          <f:number field="retryCount" default="3" />
-        </f:entry>
+            <f:entry title="Description">
+              <div>
+                Define system-level prerequisite rules that run <strong>on the target node</strong>
+                via Jenkins Remoting, <strong>before</strong> job-level prerequisites. Each rule can
+                contain multiple execution scripts, and each script can target specific nodes via
+                fuzzy pattern matching on the node name. Use node selection to further filter which
+                nodes the rule applies to by labels or name regex.
+              </div>
+            </f:entry>
 
-        <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="help?field=retryInterval">
-          <f:number field="retryIntervalSeconds" default="30" />
-        </f:entry>
+            <f:entry title="Retry Count" field="retryCount" help="help?field=retryCount">
+              <f:number field="retryCount" default="3" />
+            </f:entry>
 
-        <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="help?field=checkTimeout">
-          <f:number field="checkTimeoutSeconds" default="60" />
-        </f:entry>
+            <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="help?field=retryInterval">
+              <f:number field="retryIntervalSeconds" default="30" />
+            </f:entry>
 
-        <f:entry title="Rules" field="rules">
-          <f:repeatable var="rule" items="${it.rules}" noPre="0">
-            <table width="100%" style="border: 1px solid #ccc; margin-bottom: 10px; padding: 5px;">
-              <f:entry title="Rule Name" field="name">
-                <f:textbox field="name" />
-              </f:entry>
+            <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="help?field=checkTimeout">
+              <f:number field="checkTimeoutSeconds" default="60" />
+            </f:entry>
 
-              <f:entry title="Node Selection" field="nodeSelectionMode">
-                <select name="nodeSelectionMode">
-                  <option value="all">All nodes</option>
-                  <option value="labels">Match by labels</option>
-                  <option value="regex">Match by name regex</option>
-                </select>
-              </f:entry>
+            <f:entry title="Rules" field="rules">
+              <f:repeatable var="rule" items="${it.rules}" noPre="0">
+                <table width="100%" style="border: 1px solid #ccc; margin-bottom: 10px; padding: 5px;">
+                  <f:entry title="Rule Name" field="name">
+                    <f:textbox field="name" />
+                  </f:entry>
 
-              <f:entry title="Node Labels" field="nodeLabels" help="help?field=nodeLabels">
-                <f:textbox field="nodeLabels" />
-              </f:entry>
+                  <f:entry title="Node Selection" field="nodeSelectionMode">
+                    <select name="nodeSelectionMode">
+                      <option value="all">All nodes</option>
+                      <option value="labels">Match by labels</option>
+                      <option value="regex">Match by name regex</option>
+                    </select>
+                  </f:entry>
 
-              <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="help?field=nodePattern">
-                <f:textbox field="nodePattern" />
-              </f:entry>
+                  <f:entry title="Node Labels" field="nodeLabels" help="help?field=nodeLabels">
+                    <f:textbox field="nodeLabels" />
+                  </f:entry>
 
-              <f:entry title="Execution Scripts">
-                <div>
-                  Define one or more scripts to execute on matching nodes. Each script can
-                  target specific nodes via fuzzy pattern matching (supports <code>*</code> and
-                  <code>?</code> wildcards, comma-separated for multiple patterns).
-                </div>
-                <f:repeatable var="pscript" items="${rule.scripts}" field="scripts" noPre="0">
-                  <table width="100%" style="border: 1px dashed #bbb; margin-top: 8px; padding: 4px;">
-                    <f:entry title="Node Pattern (fuzzy)" field="nodePattern" help="help?field=scriptNodePattern">
-                      <f:textbox field="nodePattern" default="*" />
-                    </f:entry>
+                  <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="help?field=nodePattern">
+                    <f:textbox field="nodePattern" />
+                  </f:entry>
 
-                    <f:entry title="Interpreter" field="interpreter" help="help?field=interpreter">
-                      <select name="interpreter">
-                        <option value="shell script">Shell Script</option>
-                        <option value="windows batch command">Windows Batch Command</option>
-                        <option value="groovy script">Groovy Script</option>
-                      </select>
-                    </f:entry>
+                  <f:entry title="Execution Scripts">
+                    <div>
+                      Define one or more scripts to execute on matching nodes. Each script can
+                      target specific nodes via fuzzy pattern matching (supports <code>*</code> and
+                      <code>?</code> wildcards, comma-separated for multiple patterns).
+                    </div>
+                    <f:repeatable var="pscript" items="${rule.scripts}" field="scripts" noPre="0">
+                      <table width="100%" style="border: 1px dashed #bbb; margin-top: 8px; padding: 4px;">
+                        <f:entry title="Node Pattern (fuzzy)" field="nodePattern" help="help?field=scriptNodePattern">
+                          <f:textbox field="nodePattern" default="*" />
+                        </f:entry>
 
-                    <f:entry title="Groovy Sandbox" field="sandbox" help="help?field=sandbox">
-                      <f:checkbox field="sandbox" default="true" />
-                    </f:entry>
+                        <f:entry title="Interpreter" field="interpreter" help="help?field=interpreter">
+                          <select name="interpreter">
+                            <option value="shell script">Shell Script</option>
+                            <option value="windows batch command">Windows Batch Command</option>
+                            <option value="groovy script">Groovy Script</option>
+                          </select>
+                        </f:entry>
 
-                    <f:entry title="Script" field="script" help="help?field=script">
-                      <f:textarea field="script" />
-                    </f:entry>
+                        <f:entry title="Groovy Sandbox" field="sandbox" help="help?field=sandbox">
+                          <f:checkbox field="sandbox" default="true" />
+                        </f:entry>
 
-                    <f:entry>
-                      <div align="right">
-                        <f:repeatableDeleteButton />
-                      </div>
-                    </f:entry>
-                  </table>
-                </f:repeatable>
-              </f:entry>
+                        <f:entry title="Script" field="script" help="help?field=script">
+                          <f:textarea field="script" />
+                        </f:entry>
 
-              <f:entry>
-                <div align="right">
-                  <f:repeatableDeleteButton />
-                </div>
-              </f:entry>
-            </table>
-          </f:repeatable>
-        </f:entry>
+                        <f:entry>
+                          <div align="right">
+                            <f:repeatableDeleteButton />
+                          </div>
+                        </f:entry>
+                      </table>
+                    </f:repeatable>
+                  </f:entry>
 
-      </f:section>
-    </f:section>
-    <f:bottomButtonBar>
-      <f:submit value="${%Save}" />
-    </f:bottomButtonBar>
-  </f:form>
+                  <f:entry>
+                    <div align="right">
+                      <f:repeatableDeleteButton />
+                    </div>
+                  </f:entry>
+                </table>
+              </f:repeatable>
+            </f:entry>
+
+          </f:section>
+        </f:section>
+        <f:bottomButtonBar>
+          <f:submit value="${%Save}" />
+        </f:bottomButtonBar>
+      </f:form>
+
+    </l:main-panel>
+  </l:layout>
 
 </j:jelly>
