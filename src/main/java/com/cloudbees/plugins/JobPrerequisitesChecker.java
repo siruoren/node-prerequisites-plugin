@@ -62,6 +62,13 @@ import java.util.logging.Logger;
  * queue. At most {@code maxConcurrentChecks} checks run concurrently; additional
  * checks are queued in scheduling order (FIFO) until a slot frees up.
  * {@code maxConcurrentChecks <= 0} disables the limit.
+ * <p>
+ * Same-node serialization: multiple system-level rules matching the same node
+ * &mdash; including checks triggered by different queued tasks &mdash; run
+ * <strong>sequentially</strong> on that node, one at a time in scheduling
+ * order (per-node lock held while the check runs). Checks on different nodes
+ * still run concurrently within the queue limit; job-level checks are
+ * unaffected.
  */
 @Extension
 public class JobPrerequisitesChecker extends QueueTaskDispatcher {
@@ -81,6 +88,15 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
     /** retry state per check key, tracks failures and retry timing */
     private final Map<String, RetryState> retryStates = new HashMap<String, RetryState>();
+
+    /**
+     * Per-node serialization locks for system-level checks: system checks that
+     * involve the same node (even when triggered by different queued tasks)
+     * run one at a time, in scheduling order. Keyed by node name
+     * ("Built-In" for the controller); the map is bounded by the number of
+     * distinct node names, which is small on a Jenkins controller.
+     */
+    private final Map<String, Object> nodeLocks = new HashMap<String, Object>();
 
     /**
      * Fair FIFO semaphore limiting concurrent prerequisite checks.
@@ -259,23 +275,19 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     private void submitFuture(final String checkKey, final CheckTask task,
                               final String label, final Node node, final String taskName) {
         final Semaphore permits = checkPermits();
+        // System-level checks on the SAME node are serialized across queued
+        // items: the node lock is acquired BEFORE the global queue permit, so
+        // multiple system checks involving one node run one after another in
+        // scheduling order while checks on other nodes stay concurrent.
+        final Object nodeLock = "system".equals(label) ? nodeLockFor(node) : null;
         Callable<CauseOfBlockage> callable = new Callable<CauseOfBlockage>() {
             public CauseOfBlockage call() throws Exception {
-                if (permits != null) {
-                    try {
-                        permits.acquire();
-                    } catch (InterruptedException e) {
-                        return CauseOfBlockage.fromMessage(
-                                Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(
-                                        "interrupted while waiting in the prerequisite check queue"));
-                    }
-                    try {
-                        return executeCheck(task, label, node, taskName);
-                    } finally {
-                        permits.release();
+                if (nodeLock != null) {
+                    synchronized (nodeLock) {
+                        return runWithPermits(permits, task, label, node, taskName);
                     }
                 }
-                return executeCheck(task, label, node, taskName);
+                return runWithPermits(permits, task, label, node, taskName);
             }
         };
         Future<CauseOfBlockage> f = pool.submit(callable);
@@ -283,6 +295,51 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
             systemFutures.put(checkKey, f);
         } else {
             futures.put(checkKey, f);
+        }
+    }
+
+    /**
+     * Acquire a slot from the global concurrency queue (if enabled), run the
+     * check, and release the slot. Called while holding the per-node lock for
+     * system-level checks.
+     */
+    private CauseOfBlockage runWithPermits(Semaphore permits, CheckTask task,
+                                           String label, Node node, String taskName) throws Exception {
+        if (permits != null) {
+            try {
+                permits.acquire();
+            } catch (InterruptedException e) {
+                return CauseOfBlockage.fromMessage(
+                        Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(
+                                "interrupted while waiting in the prerequisite check queue"));
+            }
+            try {
+                return executeCheck(task, label, node, taskName);
+            } finally {
+                permits.release();
+            }
+        }
+        return executeCheck(task, label, node, taskName);
+    }
+
+    /**
+     * Return the serialization lock for system-level checks on the given node,
+     * creating it on demand. Locks are keyed by node name ("Built-In" for the
+     * controller) and never removed; the map size is bounded by the number of
+     * distinct node names ever seen, which is negligible on a controller.
+     */
+    private Object nodeLockFor(Node node) {
+        String name = node.getNodeName();
+        if (name == null || name.isEmpty()) {
+            name = "Built-In";
+        }
+        synchronized (nodeLocks) {
+            Object lock = nodeLocks.get(name);
+            if (lock == null) {
+                lock = new Object();
+                nodeLocks.put(name, lock);
+            }
+            return lock;
         }
     }
 

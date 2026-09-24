@@ -21,6 +21,7 @@ Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job �
 - **异步检查**：通过线程池异步执行所有检查（系统级和任务级），不阻塞 Jenkins 队列调度
 - **重试机制**：系统级检查失败后自动重试（重试次数默认 `0`，表示无限重试）；任务级检查固定无限重试、间隔 60 秒
 - **统一队列管理**：所有前置检查（系统级 + 任务级）共享队列，`maxConcurrentChecks` 控制并发数量，超出的检查按调度先后（FIFO）排队执行
+- **同节点串行**：多条系统级规则命中同一节点（或多个任务同时调度到同一节点）时，该节点的系统级检查按调度顺序逐个串行执行，不会并发跑同一节点；不同节点之间的检查仍可并发
 - **全任务类型支持**：`Check job prerequisites` 选项对**所有任务类型**开放，包括流水线（Pipeline / WorkflowJob）、Freestyle、Matrix、Maven 等
 - **超时控制**：可自定义前置命令超时时间，超时后自动 kill 进程，避免僵尸程序堆积
 - **配置集中存储**：全部配置持久化在 `$JENKINS_HOME/config.xml`（`globalNodeProperties` 段），升级自动从旧 `node-prerequisites.xml` 迁移
@@ -91,6 +92,7 @@ JobPrerequisitesChecker.canTake(node, item)
 
 - `maxConcurrentChecks` 控制同时执行的检查数量上限
 - 超过并发数量的检查按**调度先后顺序（FIFO）**排队，前面的检查执行完毕后依次执行
+- **同节点串行**：同一节点的系统级检查额外做节点级串行——无论由哪个任务触发（多个系统级规则命中同一节点、或多个任务同时调度到同一节点），该节点的系统级检查一次只执行一个，按调度先后顺序排队；不同节点之间的检查不受影响，仍可并发
 - 设置为 `0` 表示不限制并发
 - 检查请求本身仍是异步提交的，队列排队不会阻塞 Jenkins 队列调度线程
 
@@ -510,7 +512,7 @@ git push origin v1.2
 ### 核心类
 
 - **`JobPrerequisites`** — Job 属性类，存储任务级前置检查脚本配置（对所有任务类型开放，含流水线），在目标节点上启动进程执行 Shell/Batch 检查脚本并注入环境变量；Groovy 检查走 `GroovySandboxExecutor` 沙盒（经 Remoting，无需节点安装 Groovy）；超时后通过 `proc.kill()` 终止进程
-- **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制（系统级次数可配置、0=无限；任务级固定无限重试 60s 间隔）；通过公平 FIFO 信号量实现统一队列并发管理（`maxConcurrentChecks`）
+- **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制（系统级次数可配置、0=无限；任务级固定无限重试 60s 间隔）；通过公平 FIFO 信号量实现统一队列并发管理（`maxConcurrentChecks`）；系统级检查按节点加锁串行（同一节点的系统级检查一次只跑一个，不同节点并发）
 - **`SystemPrerequisitesConfig`** — 独立配置页（`ManagementLink`），作为「Manage Jenkins」页面的独立菜单项（带 `/images/24x24/gear.png` 图标），仅作编辑 UI；配置委托给 `SystemPrerequisitesData` 持久化
 - **`SystemPrerequisitesData`** — 配置数据载体（`NodeProperty`），存放在 `Jenkins.getGlobalNodeProperties()`，随 `$JENKINS_HOME/config.xml` 持久化；通过覆写 `reconfigure()` 保证「Configure System」保存时数据不被丢弃；`@Initializer` 自动从旧 `node-prerequisites.xml` 迁移；存储系统级规则列表、重试次数（`retryCount`，0=无限）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`）、队列并发（`maxConcurrentChecks`）
 - **`SystemPrerequisiteRule`** — 系统级规则数据类，包含多个 `PrerequisiteScript` 脚本条目、节点选择模式（all/labels/regex）、标签、正则等配置；支持向后兼容的单脚本字段

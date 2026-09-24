@@ -5,6 +5,11 @@
     scheduling order (first-come-first-served).
     <br/><br/>
     Set to <code>0</code> to disable the limit (every check starts immediately).
+    <br/><br/>
+    Note: system-level checks on the <strong>same node</strong> are always
+    serialized (one at a time, in scheduling order), regardless of this limit
+    &mdash; multiple rules matching one node, or several queued tasks landing
+    on the same node, will not run their system checks concurrently.
     <br/>
     Default: <code>4</code>
 </div>
