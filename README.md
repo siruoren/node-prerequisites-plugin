@@ -21,6 +21,7 @@ Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job �
 - **异步检查**：通过线程池异步执行所有检查（系统级和任务级），不阻塞 Jenkins 队列调度
 - **重试机制**：检查失败后自动重试，可配置重试次数和重试间隔，重试通过后允许队列任务在节点上执行
 - **超时控制**：可自定义前置命令超时时间，超时后自动 kill 进程，避免僵尸程序堆积
+- **REST API**：提供 `GET /node-prerequisites-api/checkAllNodes` 接口获取所有节点的系统级前置检查结果，支持详细模式
 
 ## 两层检查体系
 
@@ -295,6 +296,95 @@ if (labels.contains('production')) {
 println "All prerequisites met for ${System.getenv('NODE_NAME')}"
 ```
 
+## API 接口
+
+### 获取所有节点的系统级前置检查结果
+
+**端点：** `GET /node-prerequisites-api/checkAllNodes`
+
+**权限：** 需要 `Jenkins.ADMINISTER` 权限
+
+**查询参数：**
+
+| 参数 | 说明 |
+|------|------|
+| `detailed=true` | 返回每个规则的每个脚本详细检查结果（不会短路，会执行所有匹配脚本） |
+
+**基本模式响应示例：**
+
+```json
+{
+  "timestamp": "2026-09-24T01:35:08Z",
+  "totalNodes": 2,
+  "passed": 1,
+  "failed": 1,
+  "nodes": [
+    {
+      "name": "agent-1",
+      "online": true,
+      "passed": true,
+      "reason": ""
+    },
+    {
+      "name": "agent-2",
+      "online": true,
+      "passed": false,
+      "reason": "System prerequisite 'Disk Check' not met on node: agent-2"
+    }
+  ]
+}
+```
+
+**详细模式响应示例（`?detailed=true`）：**
+
+```json
+{
+  "timestamp": "2026-09-24T01:35:08Z",
+  "totalNodes": 1,
+  "passed": 0,
+  "failed": 1,
+  "nodes": [
+    {
+      "name": "agent-1",
+      "online": true,
+      "passed": false,
+      "reason": "System prerequisite 'Disk Check' not met on node: agent-1",
+      "rules": [
+        {
+          "ruleName": "Disk Check",
+          "appliesToNode": true,
+          "passed": false,
+          "scripts": [
+            {
+              "nodePattern": "agent-*",
+              "interpreter": "shell script",
+              "passed": false,
+              "reason": "System prerequisite 'Disk Check' not met on node: agent-1"
+            },
+            {
+              "nodePattern": "agent-*",
+              "interpreter": "groovy script",
+              "passed": true,
+              "reason": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**使用示例：**
+
+```bash
+# 基本模式 — 快速检查所有节点是否通过
+curl -u admin:token "http://jenkins.example.com/node-prerequisites-api/checkAllNodes"
+
+# 详细模式 — 获取每个规则每个脚本的详细结果
+curl -u admin:token "http://jenkins.example.com/node-prerequisites-api/checkAllNodes?detailed=true"
+```
+
 ## 构建方式
 
 ### 前置要求
@@ -387,6 +477,7 @@ git push origin v1.2
 - **`GroovyScript`** — 任务级 Groovy 解释器（`CommandInterpreter`），在节点上通过 `groovy` 命令执行
 - **`BecausePrerequisitesArentMet`** — 任务级阻塞原因对象
 - **`BecauseSystemPrerequisitesArentMet`** — 系统级阻塞原因对象
+- **`SystemPrerequisiteCheckAPI`** — REST API 端点（`RootAction`），提供 `GET /node-prerequisites-api/checkAllNodes` 接口获取所有节点的系统级前置检查结果，支持 `detailed=true` 返回逐规则逐脚本的详细结果
 - **`NodeInfoCallable`** — 远程调用对象，通过 Jenkins Remoting Channel 在 Agent 上获取真实的主机名和 IP 地址
 
 ### 系统级检查流程

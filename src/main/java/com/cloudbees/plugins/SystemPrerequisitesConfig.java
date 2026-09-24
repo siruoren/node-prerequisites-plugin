@@ -32,6 +32,7 @@ import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
 import hudson.tasks.Shell;
 import jenkins.model.GlobalConfiguration;
+import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.jenkinsci.remoting.RoleChecker;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -233,6 +234,103 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
             }
         }
         return null;
+    }
+
+    /**
+     * Run all applicable system-level rules against the given node and collect
+     * detailed per-rule, per-script results. Unlike {@link #checkNode(Node, String)},
+     * this method does <strong>not</strong> short-circuit on the first failure;
+     * it runs every matching script so the caller gets a complete picture.
+     *
+     * @param node     the target node
+     * @param taskName task name for log traceability (may be {@code null})
+     * @return a {@link JSONObject} with per-rule and per-script check results
+     */
+    public JSONObject checkNodeDetailed(Node node, String taskName) throws IOException, InterruptedException {
+        JSONObject nodeResult = new JSONObject();
+
+        String nodeName = node.getNodeName();
+        if (nodeName == null || nodeName.isEmpty()) {
+            nodeName = "Built-In";
+        }
+        nodeResult.accumulate("nodeName", nodeName);
+
+        boolean allPassed = true;
+        JSONArray ruleResults = new JSONArray();
+
+        if (rules == null || rules.isEmpty()) {
+            nodeResult.accumulate("passed", true);
+            nodeResult.accumulate("rules", ruleResults);
+            return nodeResult;
+        }
+
+        for (SystemPrerequisiteRule rule : rules) {
+            if (rule == null) continue;
+
+            JSONObject ruleResult = new JSONObject();
+            ruleResult.accumulate("ruleName", rule.getName());
+            ruleResult.accumulate("appliesToNode", rule.appliesToNode(node));
+
+            if (!rule.appliesToNode(node)) {
+                ruleResult.accumulate("passed", true);
+                ruleResult.accumulate("skipped", true);
+                ruleResults.add(ruleResult);
+                continue;
+            }
+
+            List<PrerequisiteScript> effectiveScripts = rule.getEffectiveScripts();
+            if (effectiveScripts.isEmpty()) {
+                ruleResult.accumulate("passed", true);
+                ruleResult.accumulate("skipped", true);
+                ruleResults.add(ruleResult);
+                continue;
+            }
+
+            boolean rulePassed = true;
+            JSONArray scriptResults = new JSONArray();
+
+            for (PrerequisiteScript pscript : effectiveScripts) {
+                if (pscript == null) continue;
+
+                JSONObject scriptResult = new JSONObject();
+                scriptResult.accumulate("nodePattern", pscript.getNodePattern());
+                scriptResult.accumulate("interpreter", pscript.getInterpreter());
+
+                if (!pscript.appliesToNode(nodeName)) {
+                    scriptResult.accumulate("passed", true);
+                    scriptResult.accumulate("skipped", true);
+                    scriptResults.add(scriptResult);
+                    continue;
+                }
+
+                String reason = runScriptOnNode(
+                        pscript.getScript(),
+                        pscript.getInterpreter(),
+                        node, nodeName,
+                        rule.getName(),
+                        pscript.getNodePattern(),
+                        taskName);
+
+                if (reason != null) {
+                    rulePassed = false;
+                    allPassed = false;
+                    scriptResult.accumulate("passed", false);
+                    scriptResult.accumulate("reason", reason);
+                } else {
+                    scriptResult.accumulate("passed", true);
+                    scriptResult.accumulate("reason", "");
+                }
+                scriptResults.add(scriptResult);
+            }
+
+            ruleResult.accumulate("passed", rulePassed);
+            ruleResult.accumulate("scripts", scriptResults);
+            ruleResults.add(ruleResult);
+        }
+
+        nodeResult.accumulate("passed", allPassed);
+        nodeResult.accumulate("rules", ruleResults);
+        return nodeResult;
     }
 
     /**
