@@ -173,12 +173,12 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
         }
         VirtualChannel channel = computer.getChannel();
 
-        boolean passed;
+        GroovySandboxExecutor.Result res;
         if (channel != null) {
-            hudson.remoting.Future<Boolean> rf =
+            hudson.remoting.Future<GroovySandboxExecutor.Result> rf =
                     channel.callAsync(new GroovySandboxExecutor(script, buildGroovyBinding(node)));
             try {
-                passed = rf.get(timeoutSeconds, TimeUnit.SECONDS);
+                res = rf.get(timeoutSeconds, TimeUnit.SECONDS);
             } catch (TimeoutException e) {
                 rf.cancel(true);
                 LOGGER.log(Level.WARNING, "Groovy prerequisite check timed out for task {0} on {1} after {2}s, cancelling",
@@ -194,10 +194,18 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
             }
         } else {
             // Built-in node (no channel) — run locally.
-            passed = new GroovySandboxExecutor(script, buildGroovyBinding(node)).call();
+            res = new GroovySandboxExecutor(script, buildGroovyBinding(node)).call();
         }
 
-        return passed ? null : new BecausePrerequisitesArentMet(node);
+        if (res.passed) {
+            return null;
+        }
+        String detail = res.detail != null ? " (detail: " + res.detail + ")" : "";
+        LOGGER.log(Level.WARNING, "Groovy prerequisite check for task {0} not met on {1}{2}",
+                new Object[]{logTask, node.getNodeName(), detail});
+        return CauseOfBlockage.fromMessage(
+                "Job prerequisite check failed for task " + logTask + " on node "
+                        + node.getNodeName() + detail);
     }
 
     /**

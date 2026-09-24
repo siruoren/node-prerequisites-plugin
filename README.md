@@ -134,7 +134,7 @@ JobPrerequisitesChecker.canTake(node, item)
 
 ### 系统级检查
 
-- **Groovy 脚本**：在目标节点的 Agent JVM 中执行，通过 `Channel.call(GroovySandboxExecutor)` 远程调用，使用以下绑定（binding）：
+- **Groovy 脚本**：在目标节点的 Agent JVM 中执行，通过 `Channel.callAsync(GroovySandboxExecutor)` 远程调用，使用以下绑定（binding）：
 
 | 变量名 | 类型 | 说明 |
 |--------|------|------|
@@ -198,11 +198,16 @@ JobPrerequisitesChecker.canTake(node, item)
 
 ### Groovy 沙盒限制
 
-系统级 Groovy 脚本在 `SecureASTCustomizer` 沙盒中执行，限制如下：
+系统级与任务级 Groovy 脚本均在 `SecureASTCustomizer` 沙盒中执行，限制如下：
 
-- **导入白名单**：仅允许 `java.io.File`、`java.net.InetAddress`、`java.util.*` 等安全类
-- **接收者黑名单**：禁止 `System`、`Runtime`、`Thread`、`ClassLoader`、`ProcessBuilder` 等
-- **返回值**：脚本必须返回 `true`（通过）或 `false`（拒绝节点）
+- **导入白名单**：仅允许 `java.io.File`、`java.net.InetAddress`、`java.util.*` 等安全类的显式导入（如 `import java.lang.Runtime` 会被拒绝）
+- **接收者黑名单**：禁止在 `System`、`Runtime`、`Thread`、`ClassLoader`、`Class`、`ProcessBuilder`、`Process`、`Eval`、`GroovyShell` 等类型上调用方法
+- **返回值语义**（与 Shell/Batch 的「退出码 0 = 通过」对齐）：
+  - `return true` 或其他任意值、或脚本正常结束（如只 `println` 不返回）→ **通过**
+  - `return false` 或脚本抛异常 → **不通过**
+  - 失败原因（如沙箱拦截的异常、`script returned false`）会显示在队列阻塞消息的 `detail` 中
+- **已知边界**（groovy 2.4 沙箱无法拦截）：`"command".execute()`、`new ProcessBuilder(...)`、动态 receiver 反射；需要执行命令请用 Shell/Batch 解释器，需要硬沙箱请安装 script-security 插件
+- **println 输出**：打到所在节点 JVM 的 stdout——built-in 节点写入控制器 `jenkins.log`，远程 agent 写入 agent 日志
 
 ### 使用示例
 

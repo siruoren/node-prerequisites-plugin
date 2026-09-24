@@ -49,9 +49,9 @@ import java.util.logging.Logger;
  * The script receives a {@link Binding} with node information variables.
  * If the script returns {@code false} (or throws), the prerequisite is not met.
  */
-public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException> {
+public class GroovySandboxExecutor implements Callable<GroovySandboxExecutor.Result, RuntimeException> {
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
 
     private static final Logger LOGGER = Logger.getLogger(GroovySandboxExecutor.class.getName());
 
@@ -64,33 +64,69 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
     }
 
     @Override
-    public Boolean call() throws RuntimeException {
+    public Result call() throws RuntimeException {
         try {
             Binding binding = new Binding(variables);
             GroovyShell shell = createSandboxShell(binding);
             Object result = shell.evaluate(script);
             if (result instanceof Boolean) {
-                return (Boolean) result;
+                return ((Boolean) result) ? Result.PASS : Result.explicitFalse();
             }
             // Normal completion without an explicit boolean return (null,
             // e.g. a script that only println's) counts as PASS — same
             // semantics as "exit code 0" for shell/batch checks. Only an
             // explicit `return false` or a thrown exception marks the
             // prerequisite as not met.
-            return true;
+            return Result.PASS;
         } catch (Exception e) {
             // Log the full stack: message-only logging made sandbox config
             // errors (e.g. SecureASTCustomizer canonicalization failures)
             // impossible to diagnose from the Jenkins startup log.
             LOGGER.log(Level.WARNING,
                     "Groovy sandbox script failed: " + e, e);
-            return false;
+            return Result.failure(summarize(e));
         }
     }
 
     @Override
     public void checkRoles(RoleChecker checker) throws SecurityException {
         // No privileged operation beyond evaluating the configured script on the agent.
+    }
+
+    /** One-line summary of a script failure, safe to embed in queue blockage messages. */
+    private static String summarize(Throwable e) {
+        String m = e.getMessage() != null ? e.getMessage() : e.toString();
+        m = m.replace("\r", " ").replace("\n", "; ").trim();
+        return m.length() > 200 ? m.substring(0, 200) + "..." : m;
+    }
+
+    /**
+     * Structured outcome of a sandboxed script execution. Serializable so it
+     * can travel back over the Remoting channel; carries a human-readable
+     * {@link #detail} so queue blockage messages can explain WHY the check
+     * failed instead of a bare "not met".
+     */
+    public static final class Result implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        public final boolean passed;
+        public final String detail;
+
+        public static final Result PASS = new Result(true, null);
+
+        private Result(boolean passed, String detail) {
+            this.passed = passed;
+            this.detail = detail;
+        }
+
+        static Result explicitFalse() {
+            return new Result(false, "script returned false");
+        }
+
+        static Result failure(String detail) {
+            return new Result(false, detail);
+        }
     }
 
     /**

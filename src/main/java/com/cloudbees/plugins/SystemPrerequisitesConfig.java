@@ -414,17 +414,17 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
                 ? " [pattern: " + scriptLabel + "]" : "";
 
         Computer computer = node.toComputer();
-        boolean passed;
+        GroovySandboxExecutor.Result res;
 
         if (computer == null) {
-            passed = runLocal(script, variables);
+            res = runLocal(script, variables);
         } else {
             VirtualChannel channel = computer.getChannel();
             if (channel != null) {
                 GroovySandboxExecutor executor = new GroovySandboxExecutor(script, variables);
-                hudson.remoting.Future<Boolean> rf = channel.callAsync(executor);
+                hudson.remoting.Future<GroovySandboxExecutor.Result> rf = channel.callAsync(executor);
                 try {
-                    passed = rf.get(data().getCheckTimeoutSeconds(), TimeUnit.SECONDS);
+                    res = rf.get(data().getCheckTimeoutSeconds(), TimeUnit.SECONDS);
                 } catch (TimeoutException e) {
                     rf.cancel(true);
                     String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
@@ -450,22 +450,23 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
                     return msg;
                 }
             } else {
-                passed = runLocal(script, variables);
+                res = runLocal(script, variables);
             }
         }
 
-        if (!passed) {
+        if (!res.passed) {
             String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
-                    + " not met on node: " + nodeName + taskSuffix(taskName);
+                    + " not met on node: " + nodeName
+                    + (res.detail != null ? " (detail: " + res.detail + ")" : "")
+                    + taskSuffix(taskName);
             LOGGER.log(Level.INFO, msg);
             return msg;
         }
         return null;
     }
 
-    private boolean runLocal(String script, Map<String, Object> variables) {
-        GroovySandboxExecutor executor = new GroovySandboxExecutor(script, variables);
-        return executor.call();
+    private GroovySandboxExecutor.Result runLocal(String script, Map<String, Object> variables) {
+        return new GroovySandboxExecutor(script, variables).call();
     }
 
     /**
