@@ -28,6 +28,14 @@
   <l:layout title="${it.displayName}">
     <l:main-panel>
 
+      <!--
+        Form controls (f:number / f:textbox / f:checkbox / ...) resolve their current
+        value from the Jelly context variable "instance". A ManagementLink view only
+        defines "it", so bind it explicitly — otherwise every top-level field renders
+        its default instead of the saved value (the save itself still works).
+      -->
+      <j:set var="instance" value="${it}" />
+
       <f:form method="post" action="configSubmit" name="config">
         <f:section title="System Prerequisites">
           <f:section title="System Prerequisite Rules">
@@ -56,6 +64,7 @@
 
             <f:entry title="Rules" field="rules">
               <f:repeatable var="rule" items="${it.rules}" noPre="0">
+                <j:set var="instance" value="${rule}" />
                 <table width="100%" style="border: 1px solid #ccc; margin-bottom: 10px; padding: 5px;">
                   <f:entry title="Rule Name" field="name">
                     <f:textbox field="name" />
@@ -84,6 +93,7 @@
                       <code>?</code> wildcards, comma-separated for multiple patterns).
                     </div>
                     <f:repeatable var="pscript" items="${rule.scripts}" field="scripts" noPre="0">
+                      <j:set var="instance" value="${pscript}" />
                       <table width="100%" style="border: 1px dashed #bbb; margin-top: 8px; padding: 4px;">
                         <f:entry title="Node Pattern (fuzzy)" field="nodePattern" help="help?field=scriptNodePattern">
                           <f:textbox field="nodePattern" default="*" />
