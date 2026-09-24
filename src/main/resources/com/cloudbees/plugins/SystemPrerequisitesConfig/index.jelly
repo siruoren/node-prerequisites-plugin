@@ -50,7 +50,7 @@
             </f:entry>
 
             <f:entry title="Retry Count" help="help?field=retryCount">
-              <f:number field="retryCount" default="3" />
+              <f:number field="retryCount" default="0" />
             </f:entry>
 
             <f:entry title="Retry Interval (seconds)" help="help?field=retryInterval">
@@ -59,6 +59,10 @@
 
             <f:entry title="Check Timeout (seconds)" help="help?field=checkTimeout">
               <f:number field="checkTimeoutSeconds" default="60" />
+            </f:entry>
+
+            <f:entry title="Max Concurrent Checks" help="help?field=maxConcurrentChecks">
+              <f:number field="maxConcurrentChecks" default="4" />
             </f:entry>
 
             <!--

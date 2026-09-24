@@ -22,7 +22,6 @@ import edu.umd.cs.findbugs.annotations.NonNull;
 import hudson.Extension;
 import hudson.ExtensionList;
 import hudson.FilePath;
-import hudson.XmlFile;
 import hudson.model.Computer;
 import hudson.model.Descriptor;
 import hudson.model.ManagementLink;
@@ -39,8 +38,6 @@ import jenkins.model.Jenkins;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.jenkinsci.remoting.RoleChecker;
-import org.kohsuke.stapler.DataBoundConstructor;
-import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 import org.kohsuke.stapler.interceptor.RequirePOST;
@@ -48,13 +45,11 @@ import org.kohsuke.stapler.interceptor.RequirePOST;
 import javax.servlet.ServletException;
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletResponse;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,49 +84,35 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisitesConfig.class.getName());
 
-    private List<SystemPrerequisiteRule> rules;
-    private int retryCount = 3;
-    private int retryIntervalSeconds = 30;
-    private int checkTimeoutSeconds = 60;
-
-    public SystemPrerequisitesConfig() {
-        load();
+    private SystemPrerequisitesData data() {
+        return SystemPrerequisitesData.get();
     }
 
     public List<SystemPrerequisiteRule> getRules() {
-        return rules != null ? rules : Collections.<SystemPrerequisiteRule>emptyList();
+        return data().getRules();
     }
 
-    @DataBoundSetter
-    public void setRules(List<SystemPrerequisiteRule> rules) {
-        this.rules = rules;
-    }
-
+    /**
+     * System-level retry count; {@code 0} means retry forever (no limit).
+     */
     public int getRetryCount() {
-        return retryCount;
-    }
-
-    @DataBoundSetter
-    public void setRetryCount(int retryCount) {
-        this.retryCount = retryCount;
+        return data().getRetryCount();
     }
 
     public int getRetryIntervalSeconds() {
-        return retryIntervalSeconds;
-    }
-
-    @DataBoundSetter
-    public void setRetryIntervalSeconds(int retryIntervalSeconds) {
-        this.retryIntervalSeconds = retryIntervalSeconds;
+        return data().getRetryIntervalSeconds();
     }
 
     public int getCheckTimeoutSeconds() {
-        return checkTimeoutSeconds;
+        return data().getCheckTimeoutSeconds();
     }
 
-    @DataBoundSetter
-    public void setCheckTimeoutSeconds(int checkTimeoutSeconds) {
-        this.checkTimeoutSeconds = checkTimeoutSeconds;
+    /**
+     * Max number of prerequisite checks (system + job level) executed
+     * concurrently; {@code 0} means unlimited.
+     */
+    public int getMaxConcurrentChecks() {
+        return data().getMaxConcurrentChecks();
     }
 
     public static SystemPrerequisitesConfig get() {
@@ -139,56 +120,16 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
     }
 
     /**
-     * Persistence: store configuration under {@code $JENKINS_HOME/node-prerequisites.xml}
-     * instead of the global system-configuration file, so this page lives on its own
-     * "Manage Jenkins" entry rather than inside "Configure System".
-     */
-    private transient volatile XmlFile xmlFile;
-
-    public XmlFile getConfigFile() {
-        if (xmlFile == null) {
-            Jenkins j = Jenkins.getInstanceOrNull();
-            if (j != null) {
-                xmlFile = new XmlFile(new File(j.getRootDir(), "node-prerequisites.xml"));
-            }
-        }
-        return xmlFile;
-    }
-
-    public void load() {
-        XmlFile f = getConfigFile();
-        if (f == null || !f.exists()) {
-            return;
-        }
-        try {
-            f.unmarshal(this);
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load node-prerequisites configuration: " + e, e);
-        }
-    }
-
-    @Override
-    public void save() {
-        XmlFile f = getConfigFile();
-        if (f == null) {
-            return;
-        }
-        try {
-            f.write(this);
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to save node-prerequisites configuration: " + e, e);
-        }
-    }
-
-    /**
-     * Handle the standalone configuration form submission from the
-     * "Manage Jenkins &gt; Node Prerequisites" page.
+     * Persistence: all settings live in {@link SystemPrerequisitesData}, a
+     * {@code globalNodeProperties} entry stored inside the main
+     * {@code $JENKINS_HOME/config.xml}. This page is only the editing UI.
      */
     @RequirePOST
     public void doConfigSubmit(StaplerRequest req, StaplerResponse rsp)
             throws IOException, ServletException, Descriptor.FormException {
-        req.bindJSON(this, req.getSubmittedForm());
-        save();
+        SystemPrerequisitesData data = data();
+        req.bindJSON(data, req.getSubmittedForm());
+        Jenkins.get().save();
         rsp.sendRedirect(".");
     }
 
@@ -235,7 +176,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
 
     @Override
     public String getIconFileName() {
-        return "gear.png";
+        return "/images/24x24/gear.png";
     }
 
     @Override
@@ -285,7 +226,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
      * @return {@code null} if all rules pass, a blocking reason string if any rule fails
      */
     public String checkNode(Node node, String taskName) throws IOException, InterruptedException {
-        if (rules == null || rules.isEmpty()) {
+        if (getRules().isEmpty()) {
             return null;
         }
 
@@ -348,7 +289,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
         boolean allPassed = true;
         JSONArray ruleResults = new JSONArray();
 
-        if (rules == null || rules.isEmpty()) {
+        if (getRules().isEmpty()) {
             nodeResult.accumulate("passed", true);
             nodeResult.accumulate("rules", ruleResults);
             return nodeResult;
