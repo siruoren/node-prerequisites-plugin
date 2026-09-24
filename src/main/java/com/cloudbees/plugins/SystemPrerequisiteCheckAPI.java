@@ -129,7 +129,7 @@ public class SystemPrerequisiteCheckAPI implements hudson.model.RootAction {
         return new HttpResponse() {
             @Override
             public void generateResponse(StaplerRequest req, StaplerResponse rsp, Object node)
-                    throws IOException, InterruptedException {
+                    throws IOException {
                 rsp.setContentType("application/json; charset=UTF-8");
                 rsp.addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
                 rsp.getWriter().write(response.toString(2));
