@@ -244,7 +244,8 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
      */
     private String runScriptOnNode(String script, String interpreter, Node node,
                                    String nodeName, String ruleName,
-                                   String scriptLabel, String taskName) {
+                                   String scriptLabel, String taskName)
+            throws IOException, InterruptedException {
         if (interpreter == null || SystemPrerequisiteRule.INTERP_GROOVY.equals(interpreter)) {
             return runGroovyOnNode(script, node, nodeName, ruleName, scriptLabel, taskName);
         } else {
@@ -260,7 +261,8 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
      * @return {@code null} if the script returns {@code true}, a blocking reason otherwise
      */
     private String runGroovyOnNode(String script, Node node, String nodeName,
-                                   String ruleName, String scriptLabel, String taskName) {
+                                   String ruleName, String scriptLabel, String taskName)
+            throws IOException, InterruptedException {
         Map<String, Object> variables = buildBinding(node, nodeName);
         String labelSuffix = (scriptLabel != null && !scriptLabel.isEmpty()
                 && !"*".equals(scriptLabel))
