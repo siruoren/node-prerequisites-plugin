@@ -22,8 +22,8 @@
   <!--
     MUST be wrapped in l:layout: a ManagementLink view is rendered verbatim by
     Stapler (no automatic Jenkins chrome). Without l:layout the page has no CSS,
-    no hudson-behavior.js (help buttons dead, help areas stuck on the "Loading"
-    placeholder) and no crumb JS (form POST rejected by the CSRF filter).
+    no hudson-behavior.js (help buttons dead, form json serialization dead)
+    and no crumb JS (form POST rejected by the CSRF filter).
   -->
   <l:layout title="${it.displayName}">
     <l:main-panel>
@@ -31,8 +31,7 @@
       <!--
         Form controls (f:number / f:textbox / f:checkbox / ...) resolve their current
         value from the Jelly context variable "instance". A ManagementLink view only
-        defines "it", so bind it explicitly — otherwise every top-level field renders
-        its default instead of the saved value (the save itself still works).
+        defines "it", so bind it explicitly.
       -->
       <j:set var="instance" value="${it}" />
 
@@ -50,39 +49,65 @@
               </div>
             </f:entry>
 
-            <f:entry title="Retry Count" field="retryCount" help="help?field=retryCount">
+            <f:entry title="Retry Count" help="help?field=retryCount">
               <f:number field="retryCount" default="3" />
             </f:entry>
 
-            <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="help?field=retryInterval">
+            <f:entry title="Retry Interval (seconds)" help="help?field=retryInterval">
               <f:number field="retryIntervalSeconds" default="30" />
             </f:entry>
 
-            <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="help?field=checkTimeout">
+            <f:entry title="Check Timeout (seconds)" help="help?field=checkTimeout">
               <f:number field="checkTimeoutSeconds" default="60" />
             </f:entry>
 
-            <f:entry title="Rules" field="rules">
-              <f:repeatable var="rule" items="${it.rules}" noPre="0">
+            <!--
+              Nested repeatables: the chunk div's name is the JSON key used by
+              buildFormTree, so it MUST match the Java property ("rules" / "scripts")
+              or bindJSON silently drops the data. Do NOT use the "field" attribute of
+              f:repeatable here: it switches to bi-directional binding mode, forces
+              var="instance" and requires Describable items.
+              Chunk content is plain divs, NOT a literal table: f:entry renders
+              <div class="tr form-group"> rows, and divs inside <table> get
+              foster-parented out by the browser, which corrupts the DOM that
+              repeatable.js clones and walks.
+            -->
+            <f:entry title="Rules">
+              <f:repeatable name="rules" var="rule" items="${it.rules}" add="Add Rule">
                 <j:set var="instance" value="${rule}" />
-                <table width="100%" style="border: 1px solid #ccc; margin-bottom: 10px; padding: 5px;">
-                  <f:entry title="Rule Name" field="name">
+                <div style="border: 1px solid #ccc; margin-bottom: 10px; padding: 10px;">
+
+                  <f:entry title="Rule Name">
                     <f:textbox field="name" />
                   </f:entry>
 
-                  <f:entry title="Node Selection" field="nodeSelectionMode">
-                    <select name="nodeSelectionMode">
-                      <option value="all">All nodes</option>
-                      <option value="labels">Match by labels</option>
-                      <option value="regex">Match by name regex</option>
+                  <f:entry title="Node Selection">
+                    <select name="_.nodeSelectionMode">
+                      <j:choose>
+                        <j:when test="${rule.nodeSelectionMode=='labels'}">
+                          <option value="all">All nodes</option>
+                          <option value="labels" selected="selected">Match by labels</option>
+                          <option value="regex">Match by name regex</option>
+                        </j:when>
+                        <j:when test="${rule.nodeSelectionMode=='regex'}">
+                          <option value="all">All nodes</option>
+                          <option value="labels">Match by labels</option>
+                          <option value="regex" selected="selected">Match by name regex</option>
+                        </j:when>
+                        <j:otherwise>
+                          <option value="all" selected="selected">All nodes</option>
+                          <option value="labels">Match by labels</option>
+                          <option value="regex">Match by name regex</option>
+                        </j:otherwise>
+                      </j:choose>
                     </select>
                   </f:entry>
 
-                  <f:entry title="Node Labels" field="nodeLabels" help="help?field=nodeLabels">
+                  <f:entry title="Node Labels" help="help?field=nodeLabels">
                     <f:textbox field="nodeLabels" />
                   </f:entry>
 
-                  <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="help?field=nodePattern">
+                  <f:entry title="Node Name Pattern (regex)" help="help?field=nodePattern">
                     <f:textbox field="nodePattern" />
                   </f:entry>
 
@@ -92,26 +117,41 @@
                       target specific nodes via fuzzy pattern matching (supports <code>*</code> and
                       <code>?</code> wildcards, comma-separated for multiple patterns).
                     </div>
-                    <f:repeatable var="pscript" items="${rule.scripts}" field="scripts" noPre="0">
+                    <f:repeatable name="scripts" var="pscript" items="${rule.scripts}" add="Add Script">
                       <j:set var="instance" value="${pscript}" />
-                      <table width="100%" style="border: 1px dashed #bbb; margin-top: 8px; padding: 4px;">
-                        <f:entry title="Node Pattern (fuzzy)" field="nodePattern" help="help?field=scriptNodePattern">
+                      <div style="border: 1px dashed #bbb; margin: 8px 0 0 0; padding: 8px;">
+
+                        <f:entry title="Node Pattern (fuzzy)" help="help?field=scriptNodePattern">
                           <f:textbox field="nodePattern" default="*" />
                         </f:entry>
 
-                        <f:entry title="Interpreter" field="interpreter" help="help?field=interpreter">
-                          <select name="interpreter">
-                            <option value="shell script">Shell Script</option>
-                            <option value="windows batch command">Windows Batch Command</option>
-                            <option value="groovy script">Groovy Script</option>
+                        <f:entry title="Interpreter" help="help?field=interpreter">
+                          <select name="_.interpreter">
+                            <j:choose>
+                              <j:when test="${pscript.interpreter=='windows batch command'}">
+                                <option value="shell script">Shell Script</option>
+                                <option value="windows batch command" selected="selected">Windows Batch Command</option>
+                                <option value="groovy script">Groovy Script</option>
+                              </j:when>
+                              <j:when test="${pscript.interpreter=='groovy script'}">
+                                <option value="shell script">Shell Script</option>
+                                <option value="windows batch command">Windows Batch Command</option>
+                                <option value="groovy script" selected="selected">Groovy Script</option>
+                              </j:when>
+                              <j:otherwise>
+                                <option value="shell script" selected="selected">Shell Script</option>
+                                <option value="windows batch command">Windows Batch Command</option>
+                                <option value="groovy script">Groovy Script</option>
+                              </j:otherwise>
+                            </j:choose>
                           </select>
                         </f:entry>
 
-                        <f:entry title="Groovy Sandbox" field="sandbox" help="help?field=sandbox">
+                        <f:entry title="Groovy Sandbox" help="help?field=sandbox">
                           <f:checkbox field="sandbox" default="true" />
                         </f:entry>
 
-                        <f:entry title="Script" field="script" help="help?field=script">
+                        <f:entry title="Script" help="help?field=script">
                           <f:textarea field="script" />
                         </f:entry>
 
@@ -120,7 +160,8 @@
                             <f:repeatableDeleteButton />
                           </div>
                         </f:entry>
-                      </table>
+
+                      </div>
                     </f:repeatable>
                   </f:entry>
 
@@ -129,7 +170,8 @@
                       <f:repeatableDeleteButton />
                     </div>
                   </f:entry>
-                </table>
+
+                </div>
               </f:repeatable>
             </f:entry>
 
