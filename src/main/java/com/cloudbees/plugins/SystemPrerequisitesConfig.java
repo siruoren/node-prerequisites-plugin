@@ -46,8 +46,11 @@ import org.kohsuke.stapler.StaplerResponse;
 import org.kohsuke.stapler.interceptor.RequirePOST;
 
 import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
+import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -187,6 +190,47 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
         req.bindJSON(this, req.getSubmittedForm());
         save();
         rsp.sendRedirect(".");
+    }
+
+    /**
+     * Serve help files for this "Manage Jenkins" configuration page.
+     * <p>
+     * A {@link ManagementLink} has no automatic help resolution (that mechanism
+     * belongs to {@link Descriptor}), and Jenkins blocks {@code help-*.html} on the
+     * static {@code /plugin/&lt;name&gt;/} path with HTTP 403. So we expose the help
+     * as a view method that streams the existing {@code help-*.html} resources from the
+     * classpath &mdash; the same thing {@code Descriptor.doHelp} does internally.
+     * <p>
+     * The field name is restricted to {@code [a-zA-Z]+} to prevent any path traversal.
+     */
+    public void doHelp(StaplerRequest req, StaplerResponse rsp) throws IOException {
+        String field = req.getParameter("field");
+        if (field == null || !field.matches("[a-zA-Z]+")) {
+            rsp.sendError(HttpServletResponse.SC_BAD_REQUEST);
+            return;
+        }
+        InputStream in = getClass().getResourceAsStream("/help-" + field + ".html");
+        if (in == null) {
+            // Fall back to the PrerequisiteScript help files (interpreter / script / sandbox / nodePattern).
+            in = getClass().getResourceAsStream(
+                    "/com/cloudbees/plugins/PrerequisiteScript/help-" + field + ".html");
+        }
+        if (in == null) {
+            rsp.sendError(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
+        rsp.setContentType("text/html;charset=UTF-8");
+        ServletOutputStream out = rsp.getOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        try {
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+            }
+        } finally {
+            in.close();
+        }
+        out.flush();
     }
 
     @Override

@@ -33,15 +33,15 @@
           </div>
         </f:entry>
 
-        <f:entry title="Retry Count" field="retryCount" help="/plugin/node-prerequisites/help-retryCount.html">
+        <f:entry title="Retry Count" field="retryCount" help="help?field=retryCount">
           <f:number field="retryCount" default="3" />
         </f:entry>
 
-        <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="/plugin/node-prerequisites/help-retryInterval.html">
+        <f:entry title="Retry Interval (seconds)" field="retryIntervalSeconds" help="help?field=retryInterval">
           <f:number field="retryIntervalSeconds" default="30" />
         </f:entry>
 
-        <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="/plugin/node-prerequisites/help-checkTimeout.html">
+        <f:entry title="Check Timeout (seconds)" field="checkTimeoutSeconds" help="help?field=checkTimeout">
           <f:number field="checkTimeoutSeconds" default="60" />
         </f:entry>
 
@@ -60,11 +60,11 @@
                 </select>
               </f:entry>
 
-              <f:entry title="Node Labels" field="nodeLabels" help="/plugin/node-prerequisites/help-nodeLabels.html">
+              <f:entry title="Node Labels" field="nodeLabels" help="help?field=nodeLabels">
                 <f:textbox field="nodeLabels" />
               </f:entry>
 
-              <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="/plugin/node-prerequisites/help-nodePattern.html">
+              <f:entry title="Node Name Pattern (regex)" field="nodePattern" help="help?field=nodePattern">
                 <f:textbox field="nodePattern" />
               </f:entry>
 
@@ -76,11 +76,11 @@
                 </div>
                 <f:repeatable var="pscript" items="${rule.scripts}" field="scripts" noPre="0">
                   <table width="100%" style="border: 1px dashed #bbb; margin-top: 8px; padding: 4px;">
-                    <f:entry title="Node Pattern (fuzzy)" field="nodePattern">
+                    <f:entry title="Node Pattern (fuzzy)" field="nodePattern" help="help?field=scriptNodePattern">
                       <f:textbox field="nodePattern" default="*" />
                     </f:entry>
 
-                    <f:entry title="Interpreter" field="interpreter">
+                    <f:entry title="Interpreter" field="interpreter" help="help?field=interpreter">
                       <select name="interpreter">
                         <option value="shell script">Shell Script</option>
                         <option value="windows batch command">Windows Batch Command</option>
@@ -88,11 +88,11 @@
                       </select>
                     </f:entry>
 
-                    <f:entry title="Groovy Sandbox" field="sandbox">
+                    <f:entry title="Groovy Sandbox" field="sandbox" help="help?field=sandbox">
                       <f:checkbox field="sandbox" default="true" />
                     </f:entry>
 
-                    <f:entry title="Script" field="script">
+                    <f:entry title="Script" field="script" help="help?field=script">
                       <f:textarea field="script" />
                     </f:entry>
 
@@ -116,6 +116,9 @@
 
       </f:section>
     </f:section>
+    <f:bottomButtonBar>
+      <f:submit value="${%Save}" />
+    </f:bottomButtonBar>
   </f:form>
 
 </j:jelly>
