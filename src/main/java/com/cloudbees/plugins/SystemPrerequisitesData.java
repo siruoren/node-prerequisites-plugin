@@ -114,8 +114,8 @@ public class SystemPrerequisitesData extends NodeProperty<Node> {
     }
 
     /**
-     * Max number of prerequisite checks (system + job level) running concurrently.
-     * {@code 0} or negative means unlimited.
+     * Max number of prerequisite checks (system + job level) running
+     * concurrently on a SINGLE node. {@code 0} or negative means unlimited.
      */
     public int getMaxConcurrentChecks() {
         return maxConcurrentChecks;
