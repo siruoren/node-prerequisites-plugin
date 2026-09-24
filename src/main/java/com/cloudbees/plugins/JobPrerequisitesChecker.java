@@ -20,7 +20,7 @@ package com.cloudbees.plugins;
 
 import hudson.Extension;
 import hudson.matrix.MatrixConfiguration;
-import hudson.model.AbstractProject;
+import hudson.model.Job;
 import hudson.model.Node;
 import hudson.model.Queue;
 import hudson.model.queue.CauseOfBlockage;
@@ -28,7 +28,14 @@ import hudson.model.queue.QueueTaskDispatcher;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -39,19 +46,47 @@ import java.util.logging.Logger;
  * Both run <strong>on the target node</strong>:
  * <ul>
  *   <li>System-level: Groovy sandbox script sent to the agent via Remoting</li>
- *   <li>Job-level: Shell/Batch/Groovy script executed on the agent via {@code Launcher}</li>
+ *   <li>Job-level: Shell/Batch/Groovy script executed on the agent via {@code Launcher}
+ *       (Groovy runs in the sandbox over Remoting, no {@code groovy} CLI required)</li>
  * </ul>
  * If system-level check blocks the node, job-level check is skipped.
  * <p>
- * Retry mechanism: when a check fails, it will be retried after a configurable
- * interval. Once a retry passes, the node is accepted and the queued task can
- * execute on it. After the maximum retry count is exceeded, the blockage
- * becomes permanent.
+ * Retry mechanism:
+ * <ul>
+ *   <li>System-level checks: retried up to the configured retry count
+ *       ({@code 0} means retry forever) with the configured interval.</li>
+ *   <li>Job-level checks: always retried forever with a fixed 60 second interval.</li>
+ * </ul>
+ * <p>
+ * Queue management: all prerequisite checks (system + job level) share a single
+ * queue. At most {@code maxConcurrentChecks} checks run concurrently; additional
+ * checks are queued in scheduling order (FIFO) until a slot frees up.
+ * {@code maxConcurrentChecks <= 0} disables the limit.
+ * <p>
+ * Checks are strictly <strong>task-driven</strong>: {@link #canTake} is only
+ * invoked by the Jenkins queue while a task is being scheduled onto a node,
+ * so system-level checks (and their retries) never run without a pending
+ * task. There is no periodic/background check; the only other trigger is the
+ * admin REST API ({@code node-prerequisites-api/checkAllNodes}).
+ * <p>
+ * Pass cache: once the system-level checks pass for a task on a node, the
+ * result is cached per task+node (invalidated on configuration change), so
+ * job-level check retries do <strong>not</strong> re-run the system rules
+ * &mdash; the execution order is always "all system checks, then job checks".
+ * <p>
+ * Same-node ordering: for each node, system-level checks run one at a time,
+ * sequentially &mdash; including checks triggered by different queued tasks
+ * &mdash; and a job-level check on that node only starts after <strong>all</strong>
+ * system-level checks (every rule, from every queued task) have finished.
+ * Checks on different nodes still run concurrently within the queue limit.
  */
 @Extension
 public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
     private static final Logger LOGGER = Logger.getLogger(JobPrerequisitesChecker.class.getName());
+
+    /** fixed retry interval for job-level prerequisite checks (seconds) */
+    private static final long JOB_RETRY_INTERVAL_MS = SystemPrerequisitesData.JOB_RETRY_INTERVAL_SECONDS * 1000L;
 
     ExecutorService pool = Executors.newCachedThreadPool();
 
@@ -64,6 +99,44 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     /** retry state per check key, tracks failures and retry timing */
     private final Map<String, RetryState> retryStates = new HashMap<String, RetryState>();
 
+    /**
+     * Per-node execution ordering state, keyed by node name ("Built-In" for
+     * the controller). Guarantees, for each node: (1) all system-level checks
+     * run one at a time, sequentially &mdash; including checks triggered by
+     * different queued tasks; and (2) a job-level check on the node only
+     * starts after every submitted system-level check (all rules, from all
+     * queued tasks) has finished. The map is bounded by the number of
+     * distinct node names, which is small on a Jenkins controller.
+     */
+    private static final class NodeQueue {
+        /** system-level checks submitted and not yet finished on this node */
+        int systemCount;
+        /** serializes system-level check execution on this node (fair FIFO) */
+        final Semaphore execution = new Semaphore(1, true);
+    }
+
+    private final Map<String, NodeQueue> nodeQueues = new HashMap<String, NodeQueue>();
+
+    /**
+     * System-check pass cache, keyed by "sys:itemId:nodeName" with the time of
+     * the pass. Without it, every scheduling attempt &mdash; in particular
+     * every job-level check retry of a task waiting in the queue &mdash; would
+     * re-run ALL system rules, producing an interleaved
+     * "system, job, system" execution order. Entries are dropped when the
+     * configuration changes or they expire (30 minutes).
+     */
+    private final Map<String, Long> systemPassed = new HashMap<String, Long>();
+
+    /** config version the pass cache was built against; cache cleared on change */
+    private long seenConfigVersion = -1;
+
+    /**
+     * Fair FIFO semaphore limiting concurrent prerequisite checks.
+     * Recreated whenever the configured limit changes; {@code null} = unlimited.
+     */
+    private volatile Semaphore checkPermits;
+    private volatile int permitsLimit = -1;
+
     @Override
     public CauseOfBlockage canTake(final Node node, Queue.BuildableItem item) {
 
@@ -73,24 +146,38 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
                 ? item.task.getName() : "<unknown>";
 
         // --- Phase 1: System-level checks (run first, on the node) ---
+        // Retry count from the configuration; 0 (or less) means retry forever.
+        // Once the system checks have passed for this task on this node, the
+        // result is cached: while the JOB-level check retries (fixed infinite
+        // retries, 60s), the system rules are NOT re-executed on every
+        // scheduling attempt — the order stays "all system checks, then job
+        // checks". The cache is invalidated when the configuration changes.
         String sysKey = "sys:" + key(item, node);
-        CauseOfBlockage sysBlockage = runWithRetry(sysKey, node, new CheckTask() {
-            public CauseOfBlockage execute(String taskName) throws Exception {
-                SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
-                if (config == null) return null;
-                String reason = config.checkNode(node, taskName);
-                if (reason != null) {
-                    return new BecauseSystemPrerequisitesArentMet(node, reason);
-                }
-                return null;
-            }
-        }, CHECKING_SYSTEM, "system", taskName);
+        clearSystemPassCacheIfConfigChanged();
 
-        if (sysBlockage != null) {
-            return sysBlockage;
+        if (!systemPassed.containsKey(sysKey)) {
+            CauseOfBlockage sysBlockage = runWithRetry(sysKey, node, new CheckTask() {
+                public CauseOfBlockage execute(String taskName) throws Exception {
+                    SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
+                    if (config == null) return null;
+                    String reason = config.checkNode(node, taskName);
+                    if (reason != null) {
+                        return new BecauseSystemPrerequisitesArentMet(node, reason);
+                    }
+                    return null;
+                }
+            }, CHECKING_SYSTEM, "system", taskName, getRetryCount(), getRetryIntervalMillis());
+
+            if (sysBlockage != null) {
+                return sysBlockage;
+            }
+            // System check passed — cache it for this task+node so later
+            // canTake calls (job-check retries) skip straight to Phase 2.
+            cacheSystemPass(sysKey);
         }
 
         // --- Phase 2: Job-level checks (run after system-level passes, on the node) ---
+        // Job-level checks retry forever with a fixed 60 second interval.
         final JobPrerequisites prerequisite = getPrerequisite(item);
         if (prerequisite == null) return null;
 
@@ -99,7 +186,47 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
             public CauseOfBlockage execute(String taskName) throws Exception {
                 return prerequisite.check(node, taskName);
             }
-        }, CHECKING_JOB, "job", taskName);
+        }, CHECKING_JOB, "job", taskName, 0, JOB_RETRY_INTERVAL_MS);
+    }
+
+    /**
+     * Record a system-check pass for the given task+node key. Occasionally
+     * sweeps entries older than 30 minutes to bound the map size.
+     */
+    private void cacheSystemPass(String sysKey) {
+        long now = System.currentTimeMillis();
+        synchronized (systemPassed) {
+            if (systemPassed.size() > 256) {
+                java.util.Iterator<Map.Entry<String, Long>> it =
+                        systemPassed.entrySet().iterator();
+                while (it.hasNext()) {
+                    if (now - it.next().getValue() > 30 * 60 * 1000L) {
+                        it.remove();
+                    }
+                }
+            }
+            systemPassed.put(sysKey, now);
+        }
+    }
+
+    /**
+     * Drop the system-check pass cache when the configuration has changed
+     * (version bump on every save of the System Prerequisites page), so rule
+     * edits take effect on the next scheduling attempt.
+     */
+    private void clearSystemPassCacheIfConfigChanged() {
+        SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
+        long v = config != null ? config.getConfigVersion() : 0L;
+        if (v == seenConfigVersion) {
+            return;
+        }
+        synchronized (this) {
+            if (v != seenConfigVersion) {
+                systemPassed.clear();
+                seenConfigVersion = v;
+                LOGGER.log(Level.INFO, "System prerequisite pass cache cleared (configuration changed)");
+            }
+        }
     }
 
     /**
@@ -113,18 +240,18 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
      *     <ul>
      *       <li>If retries remaining and interval not elapsed → return "waiting for retry"</li>
      *       <li>If retries remaining and interval elapsed → submit new check, return "checking"</li>
-     *       <li>If max retries exceeded → return permanent blockage</li>
+     *       <li>If max retries exceeded (only possible for a positive {@code maxRetries}) → return permanent blockage</li>
      *     </ul>
      *   </li>
      * </ol>
      *
+     * @param maxRetries maximum number of retries; {@code <= 0} means retry forever
+     * @param intervalMs delay between retries in milliseconds
      * @param taskName name of the queued task (job) this check is for, included in logs
      */
     private CauseOfBlockage runWithRetry(String checkKey, final Node node, final CheckTask task,
-                                         CauseOfBlockage checkingMessage, String label, String taskName) {
-
-        int maxRetries = getRetryCount();
-        long intervalMs = getRetryIntervalMillis();
+                                         CauseOfBlockage checkingMessage, String label, String taskName,
+                                         final int maxRetries, final long intervalMs) {
 
         // Is there a future already in flight?
         Future<CauseOfBlockage> future = getFuture(checkKey);
@@ -151,19 +278,27 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
                 state.lastFailTime = System.currentTimeMillis();
                 state.retryCount++;
 
-                if (state.retryCount > maxRetries) {
+                if (maxRetries > 0 && state.retryCount > maxRetries) {
                     // Max retries exceeded — permanent blockage
                     LOGGER.log(Level.INFO, "[{0}] Max retries ({1}) exceeded for task {2} on node {3}, blocking permanently: {4}",
                             new Object[]{label, maxRetries, taskName, node.getNodeName(), blockage.getClass().getSimpleName()});
                     return blockage;
                 }
 
-                LOGGER.log(Level.INFO, "[{0}] Check failed for task {1} on node {2}, retry {3}/{4} in {5}s",
-                        new Object[]{label, taskName, node.getNodeName(), state.retryCount, maxRetries, intervalMs / 1000});
-                // Return waiting-for-retry blockage; next canTake call will re-check after interval
-                return CauseOfBlockage.fromMessage(
-                        Messages._JobPrerequisitesChecker_WaitingForRetry(
-                                label, state.retryCount, maxRetries, intervalMs / 1000));
+                if (maxRetries > 0) {
+                    LOGGER.log(Level.INFO, "[{0}] Check failed for task {1} on node {2}, retry {3}/{4} in {5}s",
+                            new Object[]{label, taskName, node.getNodeName(), state.retryCount, maxRetries, intervalMs / 1000});
+                    // Return waiting-for-retry blockage; next canTake call will re-check after interval
+                    return CauseOfBlockage.fromMessage(
+                            Messages._JobPrerequisitesChecker_WaitingForRetry(
+                                    label, state.retryCount, maxRetries, intervalMs / 1000));
+                } else {
+                    LOGGER.log(Level.INFO, "[{0}] Check failed for task {1} on node {2}, retry {3}/\u221E (no limit) in {4}s",
+                            new Object[]{label, taskName, node.getNodeName(), state.retryCount, intervalMs / 1000});
+                    return CauseOfBlockage.fromMessage(
+                            Messages._JobPrerequisitesChecker_WaitingForRetryInfinite(
+                                    label, state.retryCount, intervalMs / 1000));
+                }
             } catch (Exception e) {
                 retryStates.remove(checkKey);
                 if (label.equals("system")) {
@@ -182,13 +317,19 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
             long elapsed = System.currentTimeMillis() - state.lastFailTime;
             if (elapsed < intervalMs) {
                 // Still within retry interval — keep waiting
-                return CauseOfBlockage.fromMessage(
-                        Messages._JobPrerequisitesChecker_WaitingForRetry(
-                                label, state.retryCount, maxRetries,
-                                (intervalMs - elapsed) / 1000));
+                if (maxRetries > 0) {
+                    return CauseOfBlockage.fromMessage(
+                            Messages._JobPrerequisitesChecker_WaitingForRetry(
+                                    label, state.retryCount, maxRetries,
+                                    (intervalMs - elapsed) / 1000));
+                } else {
+                    return CauseOfBlockage.fromMessage(
+                            Messages._JobPrerequisitesChecker_WaitingForRetryInfinite(
+                                    label, state.retryCount, (intervalMs - elapsed) / 1000));
+                }
             }
             // Interval elapsed — submit a new check
-            if (state.retryCount > maxRetries) {
+            if (maxRetries > 0 && state.retryCount > maxRetries) {
                 return state.lastBlockage;
             }
         }
@@ -217,21 +358,31 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
     private void submitFuture(final String checkKey, final CheckTask task,
                               final String label, final Node node, final String taskName) {
+        final Semaphore permits = checkPermits();
+        final boolean system = "system".equals(label);
+        final NodeQueue nq = nodeQueueFor(node);
+        if (system) {
+            // Register the system check on the node BEFORE the worker starts,
+            // so a job-level check submitted later (or already waiting) on
+            // this node cannot overtake it.
+            synchronized (nq) {
+                nq.systemCount++;
+            }
+        }
         Callable<CauseOfBlockage> callable = new Callable<CauseOfBlockage>() {
             public CauseOfBlockage call() throws Exception {
-                try {
-                    return task.execute(taskName);
-                } catch (Exception e) {
-                    LOGGER.log(Level.WARNING, "[{0}] Check threw exception for task {1} on node {2}: {3}",
-                            new Object[]{label, taskName, node.getNodeName(), e.getMessage()});
-                    if (label.equals("system")) {
-                        return CauseOfBlockage.fromMessage(
-                                Messages._JobPrerequisitesChecker_FailedToCheckSystemProrequisites(e.getMessage()));
-                    } else {
-                        return CauseOfBlockage.fromMessage(
-                                Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(e.getMessage()));
+                if (system) {
+                    return runWithPermits(permits, task, label, node, taskName, nq);
+                }
+                // Job-level check: wait until NO system-level check is
+                // pending or running on this node, then run. The wait loop
+                // releases the monitor, so registrations/decrements proceed.
+                synchronized (nq) {
+                    while (nq.systemCount > 0) {
+                        nq.wait();
                     }
                 }
+                return runWithPermits(permits, task, label, node, taskName, null);
             }
         };
         Future<CauseOfBlockage> f = pool.submit(callable);
@@ -242,9 +393,114 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
         }
     }
 
+    /**
+     * Run a check with the global concurrency queue applied. For system-level
+     * checks ({@code nq != null}) execution is additionally serialized per
+     * node via {@link NodeQueue#execution}, and the node's pending count is
+     * decremented (waking waiting job-level checks) when the check finishes,
+     * whatever the outcome. The node semaphore is acquired BEFORE the global
+     * permit so a queued same-node check does not waste a queue slot and
+     * block checks for other nodes.
+     */
+    private CauseOfBlockage runWithPermits(Semaphore permits, CheckTask task,
+                                           String label, Node node, String taskName,
+                                           NodeQueue nq) throws Exception {
+        boolean system = nq != null;
+        try {
+            if (system) {
+                nq.execution.acquire();
+            }
+            try {
+                if (permits != null) {
+                    try {
+                        permits.acquire();
+                    } catch (InterruptedException e) {
+                        return CauseOfBlockage.fromMessage(
+                                Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(
+                                        "interrupted while waiting in the prerequisite check queue"));
+                    }
+                }
+                return executeCheck(task, label, node, taskName);
+            } finally {
+                if (permits != null) {
+                    permits.release();
+                }
+            }
+        } finally {
+            if (system) {
+                nq.execution.release();
+                synchronized (nq) {
+                    nq.systemCount--;
+                    nq.notifyAll();
+                }
+            }
+        }
+    }
+
+    /**
+     * Return the per-node ordering state for the given node, creating it on
+     * demand. Keyed by node name ("Built-In" for the controller) and never
+     * removed; the map size is bounded by the number of distinct node names
+     * ever seen, which is negligible on a controller.
+     */
+    private NodeQueue nodeQueueFor(Node node) {
+        String name = node.getNodeName();
+        if (name == null || name.isEmpty()) {
+            name = "Built-In";
+        }
+        synchronized (nodeQueues) {
+            NodeQueue nq = nodeQueues.get(name);
+            if (nq == null) {
+                nq = new NodeQueue();
+                nodeQueues.put(name, nq);
+            }
+            return nq;
+        }
+    }
+
+    private CauseOfBlockage executeCheck(CheckTask task, String label, Node node, String taskName) {
+        try {
+            return task.execute(taskName);
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "[{0}] Check threw exception for task {1} on node {2}: {3}",
+                    new Object[]{label, taskName, node.getNodeName(), e.getMessage()});
+            if (label.equals("system")) {
+                return CauseOfBlockage.fromMessage(
+                        Messages._JobPrerequisitesChecker_FailedToCheckSystemProrequisites(e.getMessage()));
+            } else {
+                return CauseOfBlockage.fromMessage(
+                        Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(e.getMessage()));
+            }
+        }
+    }
+
+    /**
+     * Returns the fair FIFO semaphore that caps concurrent prerequisite checks,
+     * recreating it when the configured limit changes. {@code null} = unlimited.
+     */
+    private Semaphore checkPermits() {
+        SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
+        int limit = config != null ? config.getMaxConcurrentChecks() : 0;
+        if (limit <= 0) {
+            return null;
+        }
+        Semaphore s = checkPermits;
+        if (s != null && permitsLimit == limit) {
+            return s;
+        }
+        synchronized (this) {
+            if (checkPermits == null || permitsLimit != limit) {
+                checkPermits = new Semaphore(limit, true);
+                permitsLimit = limit;
+                LOGGER.log(Level.INFO, "Prerequisite check queue limit set to {0} concurrent checks", limit);
+            }
+            return checkPermits;
+        }
+    }
+
     private int getRetryCount() {
         SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
-        return config != null ? config.getRetryCount() : 3;
+        return config != null ? config.getRetryCount() : 0;
     }
 
     private long getRetryIntervalMillis() {
@@ -262,12 +518,16 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
         return String.valueOf(item.getId())+":"+node.getNodeName();
     }
 
+    /**
+     * Look up the job-level prerequisite property of the queued task.
+     * Works for every {@link Job} type (freestyle, matrix, pipeline, ...).
+     */
     private JobPrerequisites getPrerequisite(Queue.BuildableItem item) {
         Queue.Task task = item.task;
-        if (task instanceof AbstractProject) {
-            AbstractProject<?,?> p = (AbstractProject<?,?>) task;
+        if (task instanceof Job) {
+            Job<?,?> p = (Job<?,?>) task;
             if (task instanceof MatrixConfiguration) {
-                p = (AbstractProject<?,?>)((MatrixConfiguration)task).getParent();
+                p = (Job<?,?>)((MatrixConfiguration)task).getParent();
             }
             return p.getProperty(JobPrerequisites.class);
         }

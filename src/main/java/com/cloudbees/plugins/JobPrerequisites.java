@@ -37,9 +37,12 @@ import org.kohsuke.stapler.StaplerRequest;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -96,6 +99,14 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
      */
     public CauseOfBlockage check(Node node, String taskName) throws IOException, InterruptedException {
         final String logTask = (taskName != null && !taskName.isEmpty()) ? taskName : "<unknown>";
+
+        // Groovy checks run in the sandbox over Remoting (like system-level checks);
+        // they do NOT need a `groovy` CLI on the agent, which made the old
+        // CommandInterpreter-based execution fail on every node.
+        if (GROOVY.equals(interpreter)) {
+            return checkGroovy(node, logTask);
+        }
+
         CommandInterpreter shell = getCommandInterpreter(this.script);
         FilePath root = node.getRootPath();
         if (root == null) return new CauseOfBlockage.BecauseNodeIsOffline(node); //offline ?
@@ -144,6 +155,72 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
         } finally {
             killPool.shutdownNow();
         }
+    }
+
+    /**
+     * Run a Groovy prerequisite check in the sandbox, on the target node via
+     * Jenkins Remoting ({@link GroovySandboxExecutor} is a Remoting
+     * {@code Callable}). No {@code groovy} CLI is required on the agent.
+     *
+     * @return null if the script passes, else a blockage
+     */
+    private CauseOfBlockage checkGroovy(Node node, String logTask) throws IOException, InterruptedException {
+        int timeoutSeconds = getCheckTimeoutSeconds();
+
+        Computer computer = node.toComputer();
+        if (computer == null) {
+            return new CauseOfBlockage.BecauseNodeIsOffline(node);
+        }
+        VirtualChannel channel = computer.getChannel();
+
+        GroovySandboxExecutor.Result res;
+        if (channel != null) {
+            hudson.remoting.Future<GroovySandboxExecutor.Result> rf =
+                    channel.callAsync(new GroovySandboxExecutor(script, buildGroovyBinding(node)));
+            try {
+                res = rf.get(timeoutSeconds, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                rf.cancel(true);
+                LOGGER.log(Level.WARNING, "Groovy prerequisite check timed out for task {0} on {1} after {2}s, cancelling",
+                        new Object[]{logTask, node.getNodeName(), timeoutSeconds});
+                return CauseOfBlockage.fromMessage(
+                        Messages._JobPrerequisites_PrerequisiteCheckTimedOut(timeoutSeconds));
+            } catch (ExecutionException e) {
+                rf.cancel(true);
+                LOGGER.log(Level.WARNING, "Groovy prerequisite check failed for task {0} on {1}: {2}",
+                        new Object[]{logTask, node.getNodeName(),
+                                e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
+                return new BecausePrerequisitesArentMet(node);
+            }
+        } else {
+            // Built-in node (no channel) — run locally.
+            res = new GroovySandboxExecutor(script, buildGroovyBinding(node)).call();
+        }
+
+        if (res.passed) {
+            return null;
+        }
+        String detail = res.detail != null ? " (detail: " + res.detail + ")" : "";
+        LOGGER.log(Level.WARNING, "Groovy prerequisite check for task {0} not met on {1}{2}",
+                new Object[]{logTask, node.getNodeName(), detail});
+        return CauseOfBlockage.fromMessage(
+                Messages._JobPrerequisites_PrerequisiteCheckFailed(logTask, node.getNodeName(), detail));
+    }
+
+    /**
+     * Build the Groovy binding variables (NODE_NAME, NODE_HOSTNAME, NODE_IP, NODE_LABELS)
+     * with node information, mirroring the shell/batch environment variables.
+     */
+    private Map<String, Object> buildGroovyBinding(Node node) {
+        Map<String, Object> vars = new HashMap<String, Object>();
+        String[] envs = buildNodeEnvironment(node);
+        for (String env : envs) {
+            int idx = env.indexOf('=');
+            if (idx > 0) {
+                vars.put(env.substring(0, idx), env.substring(idx + 1));
+            }
+        }
+        return vars;
     }
 
     private int getCheckTimeoutSeconds() {
@@ -245,7 +322,9 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
 
         @Override
         public boolean isApplicable(Class<? extends Job> jobType) {
-            return AbstractProject.class.isAssignableFrom(jobType);
+            // Offer "Check job prerequisites" for EVERY job type, including
+            // Pipeline (WorkflowJob), Matrix, Freestyle, Maven, ...
+            return true;
         }
 
         @Override

@@ -20,10 +20,13 @@ package com.cloudbees.plugins;
 
 import edu.umd.cs.findbugs.annotations.NonNull;
 import hudson.Extension;
+import hudson.ExtensionList;
 import hudson.FilePath;
-import hudson.Proc;
 import hudson.model.Computer;
+import hudson.model.Descriptor;
+import hudson.model.ManagementLink;
 import hudson.model.Node;
+import hudson.model.Saveable;
 import hudson.model.TaskListener;
 import hudson.model.labels.LabelAtom;
 import hudson.remoting.Channel;
@@ -31,17 +34,22 @@ import hudson.remoting.VirtualChannel;
 import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
 import hudson.tasks.Shell;
-import jenkins.model.GlobalConfiguration;
+import jenkins.model.Jenkins;
+import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.jenkinsci.remoting.RoleChecker;
-import org.kohsuke.stapler.DataBoundConstructor;
-import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
+import org.kohsuke.stapler.interceptor.RequirePOST;
 
+import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
+import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.io.InputStream;
+
 import java.net.InetAddress;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,84 +69,160 @@ import static hudson.model.TaskListener.NULL;
 /**
  * System-level (global) prerequisites configuration.
  * <p>
- * Stored under {@code Manage Jenkins > System Configuration}.
+ * Exposed as a standalone entry on the "Manage Jenkins" page
+ * (see {@link #getUrlName()} = {@code node-prerequisites}), not inside "Configure System".
  * Rules defined here run <strong>before</strong> job-level prerequisites.
  * All scripts run <strong>on the target node</strong> via Jenkins Remoting,
  * not on the Jenkins controller.
  * <p>
- * Retry mechanism: when a check fails, it will be retried up to
- * {@link #retryCount} times with a delay of {@link #retryIntervalSeconds}
- * seconds between attempts. Once a retry passes, the node is accepted.
+ * Retry mechanism: when a system-level check fails, it will be retried up to
+ * {@link SystemPrerequisitesData#getRetryCount()} times (0 = forever) with a
+ * delay of {@link SystemPrerequisitesData#getRetryIntervalSeconds()} seconds
+ * between attempts. Once a retry passes, the node is accepted.
  */
 @Extension
-public class SystemPrerequisitesConfig extends GlobalConfiguration {
+public class SystemPrerequisitesConfig extends ManagementLink implements Saveable {
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisitesConfig.class.getName());
 
-    private List<SystemPrerequisiteRule> rules;
-    private int retryCount = 3;
-    private int retryIntervalSeconds = 30;
-    private int checkTimeoutSeconds = 60;
+    /**
+     * Bumped on every configuration save. The queue checker
+     * ({@link JobPrerequisitesChecker}) uses it to detect configuration
+     * changes and invalidate its system-check pass cache.
+     */
+    private volatile long configVersion = 0L;
 
-    @DataBoundConstructor
-    public SystemPrerequisitesConfig() {
-        load();
+    /**
+     * Monotonic configuration version; changes on every save of this page.
+     */
+    public long getConfigVersion() {
+        return configVersion;
+    }
+
+    private SystemPrerequisitesData data() {
+        return SystemPrerequisitesData.get();
     }
 
     public List<SystemPrerequisiteRule> getRules() {
-        return rules != null ? rules : Collections.<SystemPrerequisiteRule>emptyList();
+        return data().getRules();
     }
 
-    @DataBoundSetter
-    public void setRules(List<SystemPrerequisiteRule> rules) {
-        this.rules = rules;
-    }
-
+    /**
+     * System-level retry count; {@code 0} means retry forever (no limit).
+     */
     public int getRetryCount() {
-        return retryCount;
-    }
-
-    @DataBoundSetter
-    public void setRetryCount(int retryCount) {
-        this.retryCount = retryCount;
+        return data().getRetryCount();
     }
 
     public int getRetryIntervalSeconds() {
-        return retryIntervalSeconds;
-    }
-
-    @DataBoundSetter
-    public void setRetryIntervalSeconds(int retryIntervalSeconds) {
-        this.retryIntervalSeconds = retryIntervalSeconds;
+        return data().getRetryIntervalSeconds();
     }
 
     public int getCheckTimeoutSeconds() {
-        return checkTimeoutSeconds;
+        return data().getCheckTimeoutSeconds();
     }
 
-    @DataBoundSetter
-    public void setCheckTimeoutSeconds(int checkTimeoutSeconds) {
-        this.checkTimeoutSeconds = checkTimeoutSeconds;
+    /**
+     * Max number of prerequisite checks (system + job level) executed
+     * concurrently; {@code 0} means unlimited.
+     */
+    public int getMaxConcurrentChecks() {
+        return data().getMaxConcurrentChecks();
     }
 
     public static SystemPrerequisitesConfig get() {
-        return GlobalConfiguration.all().get(SystemPrerequisitesConfig.class);
+        return ExtensionList.lookupSingleton(SystemPrerequisitesConfig.class);
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * All settings live in {@link SystemPrerequisitesData} inside the main
+     * {@code $JENKINS_HOME/config.xml}, so saving means persisting Jenkins itself.
+     */
+    @Override
+    public void save() {
+        try {
+            Jenkins.get().save();
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to persist System Prerequisites configuration: " + e, e);
+        }
+    }
+
+    /**
+     * Persistence: all settings live in {@link SystemPrerequisitesData}, a
+     * {@code globalNodeProperties} entry stored inside the main
+     * {@code $JENKINS_HOME/config.xml}. This page is only the editing UI.
+     */
+    @RequirePOST
+    public void doConfigSubmit(StaplerRequest req, StaplerResponse rsp)
+            throws IOException, ServletException, Descriptor.FormException {
+        SystemPrerequisitesData data = data();
+        req.bindJSON(data, req.getSubmittedForm());
+        configVersion++;
+        Jenkins.get().save();
+        rsp.sendRedirect(".");
+    }
+
+    /**
+     * Serve help files for this "Manage Jenkins" configuration page.
+     * <p>
+     * A {@link ManagementLink} has no automatic help resolution (that mechanism
+     * belongs to {@link Descriptor}), and Jenkins blocks {@code help-*.html} on the
+     * static {@code /plugin/&lt;name&gt;/} path with HTTP 403. So we expose the help
+     * as a view method that streams the existing {@code help-*.html} resources from the
+     * classpath &mdash; the same thing {@code Descriptor.doHelp} does internally.
+     * <p>
+     * The field name is restricted to {@code [a-zA-Z]+} to prevent any path traversal.
+     */
+    public void doHelp(StaplerRequest req, StaplerResponse rsp) throws IOException {
+        String field = req.getParameter("field");
+        if (field == null || !field.matches("[a-zA-Z]+")) {
+            rsp.sendError(HttpServletResponse.SC_BAD_REQUEST);
+            return;
+        }
+        InputStream in = getClass().getResourceAsStream("/help-" + field + ".html");
+        if (in == null) {
+            // Fall back to the PrerequisiteScript help files (interpreter / script / sandbox / nodePattern).
+            in = getClass().getResourceAsStream(
+                    "/com/cloudbees/plugins/PrerequisiteScript/help-" + field + ".html");
+        }
+        if (in == null) {
+            rsp.sendError(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
+        rsp.setContentType("text/html;charset=UTF-8");
+        ServletOutputStream out = rsp.getOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        try {
+            while ((n = in.read(buf)) != -1) {
+                out.write(buf, 0, n);
+            }
+        } finally {
+            in.close();
+        }
+        out.flush();
     }
 
     @Override
-    public boolean configure(StaplerRequest req, JSONObject json) throws FormException {
-        rules = new ArrayList<>();
-        if (json.has("rules")) {
-            JSONObject rulesObj = json.getJSONObject("rules");
-            if (!rulesObj.isNullObject()) {
-                rules = req.bindJSONToList(SystemPrerequisiteRule.class, rulesObj);
-            }
-        }
-        retryCount = json.optInt("retryCount", 3);
-        retryIntervalSeconds = json.optInt("retryIntervalSeconds", 30);
-        checkTimeoutSeconds = json.optInt("checkTimeoutSeconds", 60);
-        save();
-        return true;
+    public String getIconFileName() {
+        return "/images/24x24/gear.png";
+    }
+
+    @Override
+    public String getUrlName() {
+        return "node-prerequisites";
+    }
+
+    @Override
+    public String getDescription() {
+        return "Define system-level prerequisite rules that run on agent nodes before jobs start.";
+    }
+
+    @Override
+    public ManagementLink.Category getCategory() {
+        return ManagementLink.Category.CONFIGURATION;
     }
 
     /**
@@ -162,8 +246,10 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
 
     /**
      * Run all applicable system-level rules against the given node.
-     * Each rule's Groovy script is executed <strong>on the node itself</strong>
-     * via Jenkins Remoting ({@link Channel#call}).
+     * Each rule may contain multiple {@link PrerequisiteScript} entries; each
+     * script is executed <strong>on the node itself</strong> via Jenkins
+     * Remoting ({@link Channel#call}) and can target specific nodes via
+     * fuzzy pattern matching on the node name.
      *
      * @param node     the target node
      * @param taskName the name of the queued task (job) this check is being run for;
@@ -171,7 +257,7 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
      * @return {@code null} if all rules pass, a blocking reason string if any rule fails
      */
     public String checkNode(Node node, String taskName) throws IOException, InterruptedException {
-        if (rules == null || rules.isEmpty()) {
+        if (getRules().isEmpty()) {
             return null;
         }
 
@@ -180,98 +266,248 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
             nodeName = "Built-In";
         }
 
-        for (SystemPrerequisiteRule rule : rules) {
+        for (SystemPrerequisiteRule rule : data().getRules()) {
             if (rule == null) continue;
             if (!rule.appliesToNode(node)) {
                 continue;
             }
 
-            Map<String, Object> variables = buildBinding(node, nodeName);
+            List<PrerequisiteScript> effectiveScripts = rule.getEffectiveScripts();
+            if (effectiveScripts.isEmpty()) {
+                continue;
+            }
 
-            String interpreter = rule.getInterpreter();
-
-            boolean passed;
-            if (interpreter == null || SystemPrerequisiteRule.INTERP_GROOVY.equals(interpreter)) {
-                // Groovy sandbox execution on the agent JVM via Remoting.
-                Computer computer = node.toComputer();
-                if (computer == null) {
-                    passed = runLocal(rule.getScript(), variables);
-                } else {
-                    VirtualChannel channel = computer.getChannel();
-                    if (channel != null) {
-                        GroovySandboxExecutor executor = new GroovySandboxExecutor(rule.getScript(), variables);
-                        hudson.remoting.Future<Boolean> rf = channel.callAsync(executor);
-                        try {
-                            passed = rf.get(checkTimeoutSeconds, TimeUnit.SECONDS);
-                        } catch (TimeoutException e) {
-                            rf.cancel(true);
-                            String msg = "System prerequisite '" + rule.getName()
-                                    + "' timed out on node: " + nodeName
-                                    + " (timeout: " + checkTimeoutSeconds + "s)"
-                                    + taskSuffix(taskName);
-                            LOGGER.log(Level.WARNING, msg);
-                            return msg;
-                        } catch (InterruptedException e) {
-                            rf.cancel(true);
-                            String msg = "System prerequisite '" + rule.getName()
-                                    + "' was interrupted on node: " + nodeName
-                                    + taskSuffix(taskName);
-                            LOGGER.log(Level.WARNING, msg);
-                            return msg;
-                        } catch (ExecutionException e) {
-                            rf.cancel(true);
-                            String msg = "System prerequisite '" + rule.getName()
-                                    + "' failed on node: " + nodeName + taskSuffix(taskName);
-                            Throwable cause = e.getCause();
-                            LOGGER.log(Level.WARNING, msg
-                                    + (cause != null ? " (cause: " + cause + ")" : ""), e);
-                            return msg;
-                        }
-                    } else {
-                        passed = runLocal(rule.getScript(), variables);
-                    }
+            for (PrerequisiteScript pscript : effectiveScripts) {
+                if (pscript == null) continue;
+                if (!pscript.appliesToNode(nodeName)) {
+                    continue;
                 }
-            } else {
-                // Shell / Windows Batch: run the script as a process on the target node.
-                String reason = runInterpreterOnNode(rule.getScript(), interpreter, node, rule.getName(), nodeName, taskName);
+
+                String reason = runScriptOnNode(
+                        pscript.getScript(),
+                        pscript.getInterpreter(),
+                        node, nodeName,
+                        rule.getName(),
+                        pscript.getNodePattern(),
+                        taskName);
                 if (reason != null) {
                     return reason;
                 }
-                passed = true;
-            }
-
-            if (!passed) {
-                String msg = "System prerequisite '" + rule.getName()
-                        + "' not met on node: " + nodeName + taskSuffix(taskName);
-                LOGGER.log(Level.INFO, msg);
-                return msg;
             }
         }
         return null;
     }
 
-    private boolean runLocal(String script, Map<String, Object> variables) {
-        GroovySandboxExecutor executor = new GroovySandboxExecutor(script, variables);
-        return executor.call();
+    /**
+     * Run all applicable system-level rules against the given node and collect
+     * detailed per-rule, per-script results. Unlike {@link #checkNode(Node, String)},
+     * this method does <strong>not</strong> short-circuit on the first failure;
+     * it runs every matching script so the caller gets a complete picture.
+     *
+     * @param node     the target node
+     * @param taskName task name for log traceability (may be {@code null})
+     * @return a {@link JSONObject} with per-rule and per-script check results
+     */
+    public JSONObject checkNodeDetailed(Node node, String taskName) throws IOException, InterruptedException {
+        JSONObject nodeResult = new JSONObject();
+
+        String nodeName = node.getNodeName();
+        if (nodeName == null || nodeName.isEmpty()) {
+            nodeName = "Built-In";
+        }
+        nodeResult.accumulate("nodeName", nodeName);
+
+        boolean allPassed = true;
+        JSONArray ruleResults = new JSONArray();
+
+        if (getRules().isEmpty()) {
+            nodeResult.accumulate("passed", true);
+            nodeResult.accumulate("rules", ruleResults);
+            return nodeResult;
+        }
+
+        for (SystemPrerequisiteRule rule : data().getRules()) {
+            if (rule == null) continue;
+
+            JSONObject ruleResult = new JSONObject();
+            ruleResult.accumulate("ruleName", rule.getName());
+            ruleResult.accumulate("appliesToNode", rule.appliesToNode(node));
+
+            if (!rule.appliesToNode(node)) {
+                ruleResult.accumulate("passed", true);
+                ruleResult.accumulate("skipped", true);
+                ruleResults.add(ruleResult);
+                continue;
+            }
+
+            List<PrerequisiteScript> effectiveScripts = rule.getEffectiveScripts();
+            if (effectiveScripts.isEmpty()) {
+                ruleResult.accumulate("passed", true);
+                ruleResult.accumulate("skipped", true);
+                ruleResults.add(ruleResult);
+                continue;
+            }
+
+            boolean rulePassed = true;
+            JSONArray scriptResults = new JSONArray();
+
+            for (PrerequisiteScript pscript : effectiveScripts) {
+                if (pscript == null) continue;
+
+                JSONObject scriptResult = new JSONObject();
+                scriptResult.accumulate("nodePattern", pscript.getNodePattern());
+                scriptResult.accumulate("interpreter", pscript.getInterpreter());
+
+                if (!pscript.appliesToNode(nodeName)) {
+                    scriptResult.accumulate("passed", true);
+                    scriptResult.accumulate("skipped", true);
+                    scriptResults.add(scriptResult);
+                    continue;
+                }
+
+                String reason = runScriptOnNode(
+                        pscript.getScript(),
+                        pscript.getInterpreter(),
+                        node, nodeName,
+                        rule.getName(),
+                        pscript.getNodePattern(),
+                        taskName);
+
+                if (reason != null) {
+                    rulePassed = false;
+                    allPassed = false;
+                    scriptResult.accumulate("passed", false);
+                    scriptResult.accumulate("reason", reason);
+                } else {
+                    scriptResult.accumulate("passed", true);
+                    scriptResult.accumulate("reason", "");
+                }
+                scriptResults.add(scriptResult);
+            }
+
+            ruleResult.accumulate("passed", rulePassed);
+            ruleResult.accumulate("scripts", scriptResults);
+            ruleResults.add(ruleResult);
+        }
+
+        nodeResult.accumulate("passed", allPassed);
+        nodeResult.accumulate("rules", ruleResults);
+        return nodeResult;
+    }
+
+    /**
+     * Execute a single prerequisite script on the target node.
+     * Dispatches to {@link #runGroovyOnNode} for Groovy scripts or
+     * {@link #runInterpreterOnNode} for Shell / Batch scripts.
+     *
+     * @return {@code null} if the script passes, a blocking reason string if it fails
+     */
+    private String runScriptOnNode(String script, String interpreter, Node node,
+                                   String nodeName, String ruleName,
+                                   String scriptLabel, String taskName)
+            throws IOException, InterruptedException {
+        if (interpreter == null || SystemPrerequisiteRule.INTERP_GROOVY.equals(interpreter)) {
+            return runGroovyOnNode(script, node, nodeName, ruleName, scriptLabel, taskName);
+        } else {
+            String reason = runInterpreterOnNode(script, interpreter, node,
+                    ruleName, nodeName, taskName, scriptLabel);
+            return reason;
+        }
+    }
+
+    /**
+     * Run a Groovy sandbox script on the target node via Jenkins Remoting.
+     *
+     * @return {@code null} if the script returns {@code true}, a blocking reason otherwise
+     */
+    private String runGroovyOnNode(String script, Node node, String nodeName,
+                                   String ruleName, String scriptLabel, String taskName)
+            throws IOException, InterruptedException {
+        Map<String, Object> variables = buildBinding(node, nodeName);
+        String labelSuffix = (scriptLabel != null && !scriptLabel.isEmpty()
+                && !"*".equals(scriptLabel))
+                ? " [pattern: " + scriptLabel + "]" : "";
+
+        Computer computer = node.toComputer();
+        GroovySandboxExecutor.Result res;
+
+        if (computer == null) {
+            res = runLocal(script, variables);
+        } else {
+            VirtualChannel channel = computer.getChannel();
+            if (channel != null) {
+                GroovySandboxExecutor executor = new GroovySandboxExecutor(script, variables);
+                hudson.remoting.Future<GroovySandboxExecutor.Result> rf = channel.callAsync(executor);
+                try {
+                    res = rf.get(data().getCheckTimeoutSeconds(), TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    rf.cancel(true);
+                    String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
+                            + " timed out on node: " + nodeName
+                            + " (timeout: " + data().getCheckTimeoutSeconds() + "s)"
+                            + taskSuffix(taskName);
+                    LOGGER.log(Level.WARNING, msg);
+                    return msg;
+                } catch (InterruptedException e) {
+                    rf.cancel(true);
+                    String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
+                            + " was interrupted on node: " + nodeName
+                            + taskSuffix(taskName);
+                    LOGGER.log(Level.WARNING, msg);
+                    return msg;
+                } catch (ExecutionException e) {
+                    rf.cancel(true);
+                    String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
+                            + " failed on node: " + nodeName + taskSuffix(taskName);
+                    Throwable cause = e.getCause();
+                    LOGGER.log(Level.WARNING, msg
+                            + (cause != null ? " (cause: " + cause + ")" : ""), e);
+                    return msg;
+                }
+            } else {
+                res = runLocal(script, variables);
+            }
+        }
+
+        if (!res.passed) {
+            String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
+                    + " not met on node: " + nodeName
+                    + (res.detail != null ? " (detail: " + res.detail + ")" : "")
+                    + taskSuffix(taskName);
+            LOGGER.log(Level.INFO, msg);
+            return msg;
+        }
+        return null;
+    }
+
+    private GroovySandboxExecutor.Result runLocal(String script, Map<String, Object> variables) {
+        return new GroovySandboxExecutor(script, variables).call();
     }
 
     /**
      * Run a Shell / Windows Batch prerequisite script <strong>as a process on the target node</strong>.
      * Mirrors the job-level prerequisite execution: create the script file on the node, launch it,
-     * and enforce {@link #checkTimeoutSeconds} (killing the process on timeout).
+     * and enforce {@link SystemPrerequisitesData#getCheckTimeoutSeconds()} (killing the process on timeout).
      *
      * @return {@code null} if the script exits 0, otherwise a blocking reason string.
      */
-    private String runInterpreterOnNode(String script, String interpreter, Node node, String ruleName, String nodeName, String taskName) {
+    private String runInterpreterOnNode(String script, String interpreter, Node node,
+                                        String ruleName, String nodeName, String taskName,
+                                        String scriptLabel) {
         final String safeTask = (taskName != null && !taskName.isEmpty()) ? taskName : "<unknown>";
+        String labelSuffix = (scriptLabel != null && !scriptLabel.isEmpty()
+                && !"*".equals(scriptLabel))
+                ? " [pattern: " + scriptLabel + "]" : "";
         Computer computer = node.toComputer();
         if (computer == null) {
-            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' is offline"
+            return "System prerequisite '" + ruleName + "'" + labelSuffix
+                    + " cannot be verified: node '" + nodeName + "' is offline"
                     + taskSuffix(safeTask);
         }
         FilePath root = node.getRootPath();
         if (root == null) {
-            return "System prerequisite '" + ruleName + "' cannot be verified: node '" + nodeName + "' root path unavailable"
+            return "System prerequisite '" + ruleName + "'" + labelSuffix
+                    + " cannot be verified: node '" + nodeName + "' root path unavailable"
                     + taskSuffix(safeTask);
         }
 
@@ -292,12 +528,12 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
             });
 
             try {
-                int r = joinFuture.get(checkTimeoutSeconds, TimeUnit.SECONDS);
-                return r == 0 ? null : "System prerequisite '" + ruleName + "' not met on node: " + nodeName
-                        + taskSuffix(safeTask);
+                int r = joinFuture.get(data().getCheckTimeoutSeconds(), TimeUnit.SECONDS);
+                return r == 0 ? null : "System prerequisite '" + ruleName + "'" + labelSuffix
+                        + " not met on node: " + nodeName + taskSuffix(safeTask);
             } catch (TimeoutException e) {
                 LOGGER.log(Level.WARNING, "Prerequisite check timed out for task {0} on {1} after {2}s, killing process",
-                        new Object[]{safeTask, nodeName, checkTimeoutSeconds});
+                        new Object[]{safeTask, nodeName, data().getCheckTimeoutSeconds()});
                 try {
                     proc.kill();
                 } catch (IOException killEx) {
@@ -306,20 +542,22 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
                 } finally {
                     joinFuture.cancel(true);
                 }
-                return "System prerequisite '" + ruleName + "' timed out on node: " + nodeName
-                        + " (timeout: " + checkTimeoutSeconds + "s)" + taskSuffix(safeTask);
+                return "System prerequisite '" + ruleName + "'" + labelSuffix
+                        + " timed out on node: " + nodeName
+                        + " (timeout: " + data().getCheckTimeoutSeconds() + "s)" + taskSuffix(safeTask);
             } catch (ExecutionException e) {
                 LOGGER.log(Level.WARNING, "Prerequisite check failed for task {0} on {1}: {2}",
                         new Object[]{safeTask, nodeName, e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
-                return "System prerequisite '" + ruleName + "' failed on node: " + nodeName
-                        + taskSuffix(safeTask);
+                return "System prerequisite '" + ruleName + "'" + labelSuffix
+                        + " failed on node: " + nodeName + taskSuffix(safeTask);
             } finally {
                 killPool.shutdownNow();
             }
         } catch (IOException | InterruptedException e) {
             LOGGER.log(Level.WARNING, "Failed to launch prerequisite check for task {0} on {1}: {2}",
                     new Object[]{safeTask, nodeName, e.getMessage()});
-            return "System prerequisite '" + ruleName + "' failed to launch on node: " + nodeName
+            return "System prerequisite '" + ruleName + "'" + labelSuffix
+                    + " failed to launch on node: " + nodeName
                     + " (" + e.getMessage() + ")" + taskSuffix(safeTask);
         }
     }

@@ -27,7 +27,10 @@ import jenkins.model.Jenkins;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -36,9 +39,15 @@ import java.util.regex.Pattern;
 /**
  * A single system-level prerequisite rule.
  * <p>
- * Each rule defines a Groovy script (run in sandbox by default), a node selection
- * mode (all nodes, label-matched nodes, or regex-matched nodes), and optional
- * label/pattern constraints.
+ * Each rule defines a node selection mode (all nodes, label-matched nodes, or
+ * regex-matched nodes) and one or more {@link PrerequisiteScript} entries.
+ * Each script within a rule can further target specific nodes via fuzzy
+ * pattern matching on the node name.
+ * <p>
+ * For backward compatibility, a rule may still carry a single {@code script}
+ * field (with {@code interpreter} and {@code sandbox} defaults). When the
+ * {@code scripts} list is non-empty, it takes precedence over the legacy
+ * single-script fields.
  */
 public class SystemPrerequisiteRule implements Describable<SystemPrerequisiteRule> {
 
@@ -54,7 +63,8 @@ public class SystemPrerequisiteRule implements Describable<SystemPrerequisiteRul
     public static final String INTERP_GROOVY = "groovy script";
 
     private final String name;
-    private final String script;
+    private String script;
+    private List<PrerequisiteScript> scripts;
     private String nodeSelectionMode = MODE_ALL;
     private String nodeLabels = "";
     private String nodePattern = "";
@@ -62,9 +72,8 @@ public class SystemPrerequisiteRule implements Describable<SystemPrerequisiteRul
     private String interpreter = INTERP_GROOVY;
 
     @DataBoundConstructor
-    public SystemPrerequisiteRule(String name, String script) {
+    public SystemPrerequisiteRule(String name) {
         this.name = name;
-        this.script = script;
     }
 
     public String getName() {
@@ -73,6 +82,44 @@ public class SystemPrerequisiteRule implements Describable<SystemPrerequisiteRul
 
     public String getScript() {
         return script;
+    }
+
+    @DataBoundSetter
+    public void setScript(String script) {
+        this.script = script;
+    }
+
+    public List<PrerequisiteScript> getScripts() {
+        return scripts != null ? scripts : Collections.<PrerequisiteScript>emptyList();
+    }
+
+    @DataBoundSetter
+    public void setScripts(List<PrerequisiteScript> scripts) {
+        this.scripts = scripts;
+    }
+
+    /**
+     * Return the effective list of scripts to execute.
+     * If the {@code scripts} list is non-empty, use it; otherwise, if the
+     * legacy single {@code script} field is set, wrap it in a single-element
+     * list using the rule-level {@code interpreter} and {@code sandbox}.
+     *
+     * @return non-null list (empty if no scripts configured)
+     */
+    public List<PrerequisiteScript> getEffectiveScripts() {
+        if (scripts != null && !scripts.isEmpty()) {
+            return scripts;
+        }
+        if (script != null && !script.trim().isEmpty()) {
+            PrerequisiteScript legacy = new PrerequisiteScript(script);
+            legacy.setInterpreter(interpreter);
+            legacy.setSandbox(sandbox);
+            legacy.setNodePattern("*");
+            List<PrerequisiteScript> list = new ArrayList<>();
+            list.add(legacy);
+            return list;
+        }
+        return Collections.emptyList();
     }
 
     @Override

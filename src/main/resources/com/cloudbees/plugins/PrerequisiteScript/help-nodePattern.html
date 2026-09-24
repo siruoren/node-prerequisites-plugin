@@ -1,0 +1,19 @@
+<div>
+    Fuzzy pattern to match node names. The script will only execute on nodes whose
+    name matches this pattern. Supports the following wildcards:
+    <ul>
+        <li><code>*</code> &ndash; matches any sequence of characters</li>
+        <li><code>?</code> &ndash; matches any single character</li>
+    </ul>
+    Multiple patterns can be specified as a comma-separated list; a node matching
+    <em>any</em> pattern will be included.
+    <br/><br/>
+    Examples:
+    <ul>
+        <li><code>*</code> &ndash; all nodes (default)</li>
+        <li><code>build-*</code> &ndash; nodes starting with <code>build-</code></li>
+        <li><code>agent-1,agent-2</code> &ndash; only <code>agent-1</code> and <code>agent-2</code></li>
+        <li><code>*-linux,*-mac</code> &ndash; nodes ending with <code>-linux</code> or <code>-mac</code></li>
+        <li><code>worker-?</code> &ndash; <code>worker-1</code> through <code>worker-9</code></li>
+    </ul>
+</div>

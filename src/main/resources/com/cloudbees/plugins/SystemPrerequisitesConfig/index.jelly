@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright (C) 2012 CloudBees Inc.
+  ~
+  ~ This program is free software; you can redistribute it and/or
+  ~ modify it under the terms of the GNU Lesser General Public
+  ~ License as published by the Free Software Foundation; either version 3
+  ~ of the License, or (at your option) any later version.
+  ~
+  ~ This program is distributed in the hope that it will be useful,
+  ~ but WITHOUT ANY WARRANTY; without even the implied warranty of
+  ~ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+  ~ Lesser General Public License for more details.
+  ~
+  ~ You should have received a copy of the GNU Lesser General Public
+  ~ License along with this program; if not, see
+  ~ <http://www.gnu.org/licenses/>.
+  -->
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:l="/lib/layout" xmlns:f="/lib/form">
+
+  <!--
+    MUST be wrapped in l:layout: a ManagementLink view is rendered verbatim by
+    Stapler (no automatic Jenkins chrome). Without l:layout the page has no CSS,
+    no hudson-behavior.js (help buttons dead, form json serialization dead)
+    and no crumb JS (form POST rejected by the CSRF filter).
+  -->
+  <l:layout title="${it.displayName}">
+    <l:main-panel>
+
+      <!--
+        Form controls (f:number / f:textbox / f:checkbox / ...) resolve their current
+        value from the Jelly context variable "instance". A ManagementLink view only
+        defines "it", so bind it explicitly.
+      -->
+      <j:set var="instance" value="${it}" />
+
+      <f:form method="post" action="configSubmit" name="config">
+        <f:section title="System Prerequisites">
+          <f:section title="System Prerequisite Rules">
+
+            <f:entry title="Description">
+              <div>
+                Define system-level prerequisite rules that run <strong>on the target node</strong>
+                via Jenkins Remoting, <strong>before</strong> job-level prerequisites. Each rule can
+                contain multiple execution scripts, and each script can target specific nodes via
+                fuzzy pattern matching on the node name. Use node selection to further filter which
+                nodes the rule applies to by labels or name regex.
+              </div>
+            </f:entry>
+
+            <f:entry title="Retry Count" help="help?field=retryCount">
+              <f:number field="retryCount" default="0" />
+            </f:entry>
+
+            <f:entry title="Retry Interval (seconds)" help="help?field=retryInterval">
+              <f:number field="retryIntervalSeconds" default="30" />
+            </f:entry>
+
+            <f:entry title="Check Timeout (seconds)" help="help?field=checkTimeout">
+              <f:number field="checkTimeoutSeconds" default="60" />
+            </f:entry>
+
+            <f:entry title="Max Concurrent Checks" help="help?field=maxConcurrentChecks">
+              <f:number field="maxConcurrentChecks" default="4" />
+            </f:entry>
+
+            <!--
+              Nested repeatables: the chunk div's name is the JSON key used by
+              buildFormTree, so it MUST match the Java property ("rules" / "scripts")
+              or bindJSON silently drops the data. Do NOT use the "field" attribute of
+              f:repeatable here: it switches to bi-directional binding mode, forces
+              var="instance" and requires Describable items.
+              Chunk content is plain divs, NOT a literal table: f:entry renders
+              <div class="tr form-group"> rows, and divs inside <table> get
+              foster-parented out by the browser, which corrupts the DOM that
+              repeatable.js clones and walks.
+            -->
+            <f:entry title="Rules">
+              <f:repeatable name="rules" var="rule" items="${it.rules}" add="Add Rule">
+                <j:set var="instance" value="${rule}" />
+                <div style="border: 1px solid #ccc; margin-bottom: 10px; padding: 10px;">
+
+                  <f:entry title="Rule Name">
+                    <f:textbox field="name" />
+                  </f:entry>
+
+                  <f:entry title="Node Selection">
+                    <select name="_.nodeSelectionMode">
+                      <j:choose>
+                        <j:when test="${rule.nodeSelectionMode=='labels'}">
+                          <option value="all">All nodes</option>
+                          <option value="labels" selected="selected">Match by labels</option>
+                          <option value="regex">Match by name regex</option>
+                        </j:when>
+                        <j:when test="${rule.nodeSelectionMode=='regex'}">
+                          <option value="all">All nodes</option>
+                          <option value="labels">Match by labels</option>
+                          <option value="regex" selected="selected">Match by name regex</option>
+                        </j:when>
+                        <j:otherwise>
+                          <option value="all" selected="selected">All nodes</option>
+                          <option value="labels">Match by labels</option>
+                          <option value="regex">Match by name regex</option>
+                        </j:otherwise>
+                      </j:choose>
+                    </select>
+                  </f:entry>
+
+                  <f:entry title="Node Labels" help="help?field=nodeLabels">
+                    <f:textbox field="nodeLabels" />
+                  </f:entry>
+
+                  <f:entry title="Node Name Pattern (regex)" help="help?field=nodePattern">
+                    <f:textbox field="nodePattern" />
+                  </f:entry>
+
+                  <f:entry title="Execution Scripts">
+                    <div>
+                      Define one or more scripts to execute on matching nodes. Each script can
+                      target specific nodes via fuzzy pattern matching (supports <code>*</code> and
+                      <code>?</code> wildcards, comma-separated for multiple patterns).
+                    </div>
+                    <f:repeatable name="scripts" var="pscript" items="${rule.scripts}" add="Add Script">
+                      <j:set var="instance" value="${pscript}" />
+                      <div style="border: 1px dashed #bbb; margin: 8px 0 0 0; padding: 8px;">
+
+                        <f:entry title="Node Pattern (fuzzy)" help="help?field=scriptNodePattern">
+                          <f:textbox field="nodePattern" default="*" />
+                        </f:entry>
+
+                        <f:entry title="Interpreter" help="help?field=interpreter">
+                          <select name="_.interpreter">
+                            <j:choose>
+                              <j:when test="${pscript.interpreter=='windows batch command'}">
+                                <option value="shell script">Shell Script</option>
+                                <option value="windows batch command" selected="selected">Windows Batch Command</option>
+                                <option value="groovy script">Groovy Script</option>
+                              </j:when>
+                              <j:when test="${pscript.interpreter=='groovy script'}">
+                                <option value="shell script">Shell Script</option>
+                                <option value="windows batch command">Windows Batch Command</option>
+                                <option value="groovy script" selected="selected">Groovy Script</option>
+                              </j:when>
+                              <j:otherwise>
+                                <option value="shell script" selected="selected">Shell Script</option>
+                                <option value="windows batch command">Windows Batch Command</option>
+                                <option value="groovy script">Groovy Script</option>
+                              </j:otherwise>
+                            </j:choose>
+                          </select>
+                        </f:entry>
+
+                        <f:entry title="Groovy Sandbox" help="help?field=sandbox">
+                          <f:checkbox field="sandbox" default="true" />
+                        </f:entry>
+
+                        <f:entry title="Script" help="help?field=script">
+                          <f:textarea field="script" />
+                        </f:entry>
+
+                        <f:entry>
+                          <div align="right">
+                            <f:repeatableDeleteButton />
+                          </div>
+                        </f:entry>
+
+                      </div>
+                    </f:repeatable>
+                  </f:entry>
+
+                  <f:entry>
+                    <div align="right">
+                      <f:repeatableDeleteButton />
+                    </div>
+                  </f:entry>
+
+                </div>
+              </f:repeatable>
+            </f:entry>
+
+          </f:section>
+        </f:section>
+        <f:bottomButtonBar>
+          <f:submit value="${%Save}" />
+        </f:bottomButtonBar>
+      </f:form>
+
+    </l:main-panel>
+  </l:layout>
+
+</j:jelly>

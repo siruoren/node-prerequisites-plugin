@@ -1,0 +1,20 @@
+<div>
+    The Groovy script runs inside a compile-time <strong>sandbox</strong> based on
+    <code>SecureASTCustomizer</code>, regardless of this checkbox (the checkbox is
+    kept for configuration compatibility).
+    <br/>
+    <strong>Blocked at compile time</strong> (the script fails with a SecurityException
+    and the check counts as failed):
+    <ul>
+        <li>explicit imports outside the safe whitelist (e.g. <code>java.lang.Runtime</code>)</li>
+        <li>method calls on <code>System</code>, <code>Runtime</code>, <code>Thread</code>,
+            <code>ClassLoader</code>, <code>Class</code>, <code>ProcessBuilder</code>,
+            <code>Process</code>, <code>Eval</code>, <code>GroovyShell</code></li>
+    </ul>
+    <br/>
+    Known limitations of the groovy-2.4 sandbox: process spawning via
+    <code>"command".execute()</code>, <code>new ProcessBuilder(...)</code> and dynamic-receiver
+    reflection are <em>not</em> blocked. If you need to run commands, use the
+    <strong>Shell Script</strong> / <strong>Windows Batch Command</strong> interpreter instead;
+    for hard sandboxing install the Jenkins <em>script-security</em> plugin.
+</div>

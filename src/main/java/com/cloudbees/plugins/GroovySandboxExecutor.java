@@ -49,9 +49,9 @@ import java.util.logging.Logger;
  * The script receives a {@link Binding} with node information variables.
  * If the script returns {@code false} (or throws), the prerequisite is not met.
  */
-public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException> {
+public class GroovySandboxExecutor implements Callable<GroovySandboxExecutor.Result, RuntimeException> {
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
 
     private static final Logger LOGGER = Logger.getLogger(GroovySandboxExecutor.class.getName());
 
@@ -64,24 +64,69 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
     }
 
     @Override
-    public Boolean call() throws RuntimeException {
+    public Result call() throws RuntimeException {
         try {
             Binding binding = new Binding(variables);
             GroovyShell shell = createSandboxShell(binding);
             Object result = shell.evaluate(script);
             if (result instanceof Boolean) {
-                return (Boolean) result;
+                return ((Boolean) result) ? Result.PASS : Result.explicitFalse();
             }
-            return result != null;
+            // Normal completion without an explicit boolean return (null,
+            // e.g. a script that only println's) counts as PASS — same
+            // semantics as "exit code 0" for shell/batch checks. Only an
+            // explicit `return false` or a thrown exception marks the
+            // prerequisite as not met.
+            return Result.PASS;
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Groovy sandbox script failed: {0}", e.getMessage());
-            return false;
+            // Log the full stack: message-only logging made sandbox config
+            // errors (e.g. SecureASTCustomizer canonicalization failures)
+            // impossible to diagnose from the Jenkins startup log.
+            LOGGER.log(Level.WARNING,
+                    "Groovy sandbox script failed: " + e, e);
+            return Result.failure(summarize(e));
         }
     }
 
     @Override
     public void checkRoles(RoleChecker checker) throws SecurityException {
         // No privileged operation beyond evaluating the configured script on the agent.
+    }
+
+    /** One-line summary of a script failure, safe to embed in queue blockage messages. */
+    private static String summarize(Throwable e) {
+        String m = e.getMessage() != null ? e.getMessage() : e.toString();
+        m = m.replace("\r", " ").replace("\n", "; ").trim();
+        return m.length() > 200 ? m.substring(0, 200) + "..." : m;
+    }
+
+    /**
+     * Structured outcome of a sandboxed script execution. Serializable so it
+     * can travel back over the Remoting channel; carries a human-readable
+     * {@link #detail} so queue blockage messages can explain WHY the check
+     * failed instead of a bare "not met".
+     */
+    public static final class Result implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        public final boolean passed;
+        public final String detail;
+
+        public static final Result PASS = new Result(true, null);
+
+        private Result(boolean passed, String detail) {
+            this.passed = passed;
+            this.detail = detail;
+        }
+
+        static Result explicitFalse() {
+            return new Result(false, "script returned false");
+        }
+
+        static Result failure(String detail) {
+            return new Result(false, detail);
+        }
     }
 
     /**
@@ -117,18 +162,50 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
                 "java.util.Arrays"
         ));
 
-        customizer.setIndirectImportCheckEnabled(true);
+        // NOTE: indirect import checks MUST stay disabled. When enabled, the
+        // SecureASTCustomizer verifies the resolved type of EVERY expression at
+        // canonicalization time; implicit java.lang.Object (bound variables,
+        // closures, property expressions) is not in any whitelist, so every
+        // script dies with "General error during canonicalization: Indirect
+        // import checks prevents usage of expression". With it disabled the
+        // imports whitelist only restricts EXPLICIT import statements, which is
+        // what we want; dangerous operations are blocked via receiver
+        // blacklists below.
+        customizer.setIndirectImportCheckEnabled(false);
 
+        // Blocks method calls whose RECEIVER type is statically inferable and
+        // in the list. Verified against groovy 2.4.12 (bundled with Jenkins
+        // 2.277.4): System.exit / Runtime.getRuntime / Class.forName /
+        // Eval.me / explicit "import java.lang.Runtime" are all rejected at
+        // compile time.
         customizer.setReceiversBlackList(Arrays.asList(
                 System.class.getName(),
                 Runtime.class.getName(),
                 Thread.class.getName(),
+                ThreadGroup.class.getName(),
                 ClassLoader.class.getName(),
                 "java.lang.ProcessBuilder",
                 "java.lang.Process",
+                "java.lang.Class",
+                "groovy.lang.Binding",
                 "groovy.lang.GroovyShell",
-                "groovy.lang.GroovyClassLoader"
+                "groovy.lang.GroovyClassLoader",
+                "groovy.util.Eval",
+                "org.codehaus.groovy.runtime.ProcessGroovyMethods"
         ));
+
+        // Security boundary note: SecureASTCustomizer in groovy 2.4.x has no
+        // method-name blacklist (setMethodsBlackList only exists in groovy
+        // 2.5+; calling it here would not even compile). Consequently leaks
+        // that were verified empirically and are ACCEPTED RISKS for scripts
+        // configured by Jenkins administrators:
+        //   - String/List.execute()      (DGM process spawning, receiver is
+        //                                 String/List, not ProcessGroovyMethods)
+        //   - new ProcessBuilder(...)    (constructor calls are not checked)
+        //   - dynamic-receiver reflective calls (e.g. this.class.getClassLoader())
+        // Use the Shell/Batch interpreter to run commands; for hard sandboxing
+        // use the Jenkins script-security plugin.
+        //
 
         ImportCustomizer importCustomizer = new ImportCustomizer();
         importCustomizer.addImports(
