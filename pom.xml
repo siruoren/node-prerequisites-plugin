@@ -27,7 +27,7 @@
 	</parent>
 
 	<artifactId>node-prerequisites</artifactId>
-	<version>1.2-SNAPSHOT</version>
+	<version>0.0.1</version>
 	<packaging>hpi</packaging>
 
 	<name>Node Prerequisites Plugin</name>
