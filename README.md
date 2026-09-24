@@ -16,6 +16,7 @@ Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job �
 - **Groovy 沙盒执行**：系统级检查默认使用 Groovy 沙盒（`SecureASTCustomizer`），限制危险操作
 - **多解释器支持**：系统级与任务级检查均支持 Groovy 脚本、Shell 脚本、Windows 批处理命令三种执行方式（系统级 Groovy 走沙盒，Shell/Batch 在节点以进程方式运行）
 - **节点选择约束**：系统级规则支持按标签匹配或正则匹配选择目标节点
+- **多执行脚本**：每条系统级规则支持创建多个执行脚本，每个脚本可通过模糊匹配（`*`/`?` 通配符）指定目标节点执行
 - **节点环境变量**：自动注入节点相关信息作为环境变量，脚本可直接引用
 - **异步检查**：通过线程池异步执行所有检查（系统级和任务级），不阻塞 Jenkins 队列调度
 - **重试机制**：检查失败后自动重试，可配置重试次数和重试间隔，重试通过后允许队列任务在节点上执行
@@ -135,6 +136,32 @@ JobPrerequisitesChecker.canTake(node, item)
 | `all` | 所有节点 | — |
 | `labels` | 匹配任一标签的节点 | `linux docker production` |
 | `regex` | 节点名称匹配正则的节点 | `^build-agent-.*$` |
+
+### 多执行脚本
+
+每条系统级规则支持创建多个执行脚本，每个脚本可以独立配置：
+
+- **脚本内容**：Groovy / Shell / Windows Batch 脚本
+- **解释器**：每个脚本可选择不同的解释器类型
+- **模糊匹配节点模式**：通过通配符指定脚本仅在匹配的节点上执行
+
+#### 模糊匹配语法
+
+| 通配符 | 含义 | 示例 |
+|--------|------|------|
+| `*` | 匹配任意字符序列 | `build-*` 匹配所有以 `build-` 开头的节点 |
+| `?` | 匹配单个字符 | `worker-?` 匹配 `worker-1` 到 `worker-9` |
+| `,` | 分隔多个模式（任一匹配即可） | `agent-1,agent-2` 匹配 `agent-1` 或 `agent-2` |
+
+默认值 `*` 表示对所有节点执行。
+
+#### 配置示例
+
+一条规则可以包含多个脚本，分别针对不同节点执行不同检查：
+
+- 脚本 1：`nodePattern = build-*`，Shell 脚本检查磁盘空间
+- 脚本 2：`nodePattern = gpu-*`，Shell 脚本检查 GPU 驱动
+- 脚本 3：`nodePattern = *`，Groovy 脚本检查节点在线状态
 
 ### Groovy 沙盒限制
 
@@ -335,6 +362,7 @@ git push origin v1.2
 
 | 插件版本 | Jenkins 版本 | 说明 |
 |----------|-------------|------|
+| 1.2 | 2.277.4+ | 系统级规则支持多执行脚本，每个脚本支持模糊匹配指定节点执行 |
 | 1.2 | 2.277.4+ | 新增节点环境变量注入、Groovy 解释器、系统级前置检查 |
 | 1.2 | 2.277.4+ | 系统级规则新增多解释器支持（Groovy 沙盒 / Shell / Windows 批处理），命令框为多行输入 |
 | 1.1 | 1.452+ | 原始版本，基础前置检查功能 |
@@ -352,8 +380,9 @@ git push origin v1.2
 
 - **`JobPrerequisites`** — Job 属性类，存储任务级前置检查脚本配置，在目标节点上启动进程执行检查脚本并注入环境变量；超时后通过 `proc.kill()` 终止进程
 - **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制，跟踪每个检查的失败次数和重试时间
-- **`SystemPrerequisitesConfig`** — 全局配置类（`GlobalConfiguration`），存储系统级规则列表、重试次数（`retryCount`）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`），按规则的 `interpreter` 分发执行：Groovy 走 `Channel.callAsync()` 沙盒，Shell/Batch 在节点以进程方式运行（`CommandInterpreter` + `Launcher`）
-- **`SystemPrerequisiteRule`** — 系统级规则数据类，包含脚本、解释器（`interpreter`：groovy script / shell script / windows batch command）、节点选择模式（all/labels/regex）、标签、正则、沙盒开关等配置
+- **`SystemPrerequisitesConfig`** — 全局配置类（`GlobalConfiguration`），存储系统级规则列表、重试次数（`retryCount`）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`），遍历每条规则的所有脚本，按脚本的 `interpreter` 分发执行：Groovy 走 `Channel.callAsync()` 沙盒，Shell/Batch 在节点以进程方式运行（`CommandInterpreter` + `Launcher`）
+- **`SystemPrerequisiteRule`** — 系统级规则数据类，包含多个 `PrerequisiteScript` 脚本条目、节点选择模式（all/labels/regex）、标签、正则等配置；支持向后兼容的单脚本字段
+- **`PrerequisiteScript`** — 单个执行脚本数据类，包含脚本内容、解释器（`interpreter`：groovy script / shell script / windows batch command）、模糊匹配节点模式（`nodePattern`，支持 `*` 和 `?` 通配符及逗号分隔多模式）、沙盒开关
 - **`GroovySandboxExecutor`** — Groovy 沙盒执行器（`hudson.remoting.Callable`），可序列化，通过 Remoting Channel 发送到节点执行，使用 `SecureASTCustomizer` 限制危险操作
 - **`GroovyScript`** — 任务级 Groovy 解释器（`CommandInterpreter`），在节点上通过 `groovy` 命令执行
 - **`BecausePrerequisitesArentMet`** — 任务级阻塞原因对象
@@ -364,11 +393,13 @@ git push origin v1.2
 
 1. `JobPrerequisitesChecker.canTake()` 通过线程池异步调用 `SystemPrerequisitesConfig.checkNode(node)`
 2. `checkNode(node)` 遍历所有规则
-3. 对每条规则，先通过 `appliesToNode(node)` 检查节点是否匹配
-4. 按规则的 `interpreter` 分发：Groovy 构造 `GroovySandboxExecutor`（含脚本和变量）通过 `Channel.call(executor)` 发送到节点沙盒执行；Shell/Batch 在节点以进程方式运行
-5. 在节点的 Agent JVM 中执行 Groovy 沙盒脚本（`SecureASTCustomizer` 限制危险操作）
-6. 脚本返回 `false` 或抛异常时，返回 `BecauseSystemPrerequisitesArentMet`
-7. 所有系统级规则通过后，进入任务级检查
+3. 对每条规则，先通过 `appliesToNode(node)` 检查节点是否匹配（规则级过滤：all/labels/regex）
+4. 获取规则的有效脚本列表 `getEffectiveScripts()`（优先使用 `scripts` 列表，向后兼容回退到单脚本字段）
+5. 遍历每个 `PrerequisiteScript`，通过 `appliesToNode(nodeName)` 检查脚本的模糊匹配模式是否匹配当前节点
+6. 按脚本的 `interpreter` 分发：Groovy 构造 `GroovySandboxExecutor`（含脚本和变量）通过 `Channel.call(executor)` 发送到节点沙盒执行；Shell/Batch 在节点以进程方式运行
+7. 在节点的 Agent JVM 中执行 Groovy 沙盒脚本（`SecureASTCustomizer` 限制危险操作）
+8. 脚本返回 `false` 或抛异常时，返回 `BecauseSystemPrerequisitesArentMet`
+9. 所有系统级规则的所有匹配脚本通过后，进入任务级检查
 
 ### 重试机制流程
 

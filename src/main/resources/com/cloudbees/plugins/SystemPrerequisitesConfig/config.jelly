@@ -25,9 +25,10 @@
       <f:entry title="Description">
         <div>
           Define system-level prerequisite rules that run <strong>on the target node</strong>
-          via Jenkins Remoting, <strong>before</strong> job-level prerequisites. Rules default
-          to Groovy sandbox execution. Use node selection to target specific nodes by labels
-          or name regex.
+          via Jenkins Remoting, <strong>before</strong> job-level prerequisites. Each rule can
+          contain multiple execution scripts, and each script can target specific nodes via
+          fuzzy pattern matching on the node name. Use node selection to further filter which
+          nodes the rule applies to by labels or name regex.
         </div>
       </f:entry>
 
@@ -45,7 +46,7 @@
 
       <f:entry title="Rules" field="rules">
         <f:repeatable var="rule" items="${instance.rules}" noPre="0">
-          <table width="100%">
+          <table width="100%" style="border: 1px solid #ccc; margin-bottom: 10px; padding: 5px;">
             <f:entry title="Rule Name" field="name">
               <f:textbox field="name" />
             </f:entry>
@@ -66,16 +67,37 @@
               <f:textbox field="nodePattern" />
             </f:entry>
 
-            <f:entry title="Groovy Sandbox" field="sandbox">
-              <f:checkbox field="sandbox" default="true" />
-            </f:entry>
+            <f:entry title="Execution Scripts">
+              <div>
+                Define one or more scripts to execute on matching nodes. Each script can
+                target specific nodes via fuzzy pattern matching (supports <code>*</code> and
+                <code>?</code> wildcards, comma-separated for multiple patterns).
+              </div>
+              <f:repeatable var="pscript" items="${rule.scripts}" field="scripts" noPre="0">
+                <table width="100%" style="border: 1px dashed #bbb; margin-top: 8px; padding: 4px;">
+                  <f:entry title="Node Pattern (fuzzy)" field="nodePattern">
+                    <f:textbox field="nodePattern" default="*" />
+                  </f:entry>
 
-            <f:entry title="Interpreter" field="interpreter">
-              <f:select default="groovy script" />
-            </f:entry>
+                  <f:entry title="Interpreter" field="interpreter">
+                    <f:select default="groovy script" />
+                  </f:entry>
 
-            <f:entry title="Script" field="script">
-              <f:textarea field="script" />
+                  <f:entry title="Groovy Sandbox" field="sandbox">
+                    <f:checkbox field="sandbox" default="true" />
+                  </f:entry>
+
+                  <f:entry title="Script" field="script">
+                    <f:textarea field="script" />
+                  </f:entry>
+
+                  <f:entry>
+                    <div align="right">
+                      <f:repeatableDeleteButton />
+                    </div>
+                  </f:entry>
+                </table>
+              </f:repeatable>
             </f:entry>
 
             <f:entry>
