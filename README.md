@@ -11,7 +11,7 @@ Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job �
 
 ## 功能特性
 
-- **系统级前置检查**：在 `Manage Jenkins > System Configuration` 中配置全局规则，所有 Job 生效
+- **系统级前置检查**：在 `Manage Jenkins > System Prerequisites` 中配置全局规则，所有 Job 生效
 - **优先执行顺序**：系统级检查先执行，通过后再执行任务级检查
 - **Groovy 沙盒执行**：系统级检查默认使用 Groovy 沙盒（`SecureASTCustomizer`），限制危险操作
 - **多解释器支持**：系统级与任务级检查均支持 Groovy 脚本、Shell 脚本、Windows 批处理命令三种执行方式（系统级 Groovy 走沙盒，Shell/Batch 在节点以进程方式运行）
@@ -92,7 +92,7 @@ JobPrerequisitesChecker.canTake(node, item)
 
 | 特性 | 系统级检查 | 任务级检查 |
 |------|-----------|-----------|
-| 配置位置 | Manage Jenkins > System Configuration | Job 配置页面 |
+| 配置位置 | Manage Jenkins > System Prerequisites | Job 配置页面 |
 | 执行位置 | 目标节点（通过 Remoting Channel） | 目标节点（通过 Launcher） |
 | 执行方式 | Groovy 沙盒 / Shell / Batch（按解释器分发） | Shell/Batch/Groovy（`CommandInterpreter`） |
 | 执行模式 | 异步（线程池） | 异步（线程池） |
@@ -128,7 +128,7 @@ JobPrerequisitesChecker.canTake(node, item)
 
 ### 配置入口
 
-`Manage Jenkins > System Configuration > System Prerequisites`
+`Manage Jenkins > System Prerequisites`
 
 ### 节点选择模式
 
@@ -470,7 +470,7 @@ git push origin v1.2
 
 - **`JobPrerequisites`** — Job 属性类，存储任务级前置检查脚本配置，在目标节点上启动进程执行检查脚本并注入环境变量；超时后通过 `proc.kill()` 终止进程
 - **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制，跟踪每个检查的失败次数和重试时间
-- **`SystemPrerequisitesConfig`** — 全局配置类（`GlobalConfiguration`），存储系统级规则列表、重试次数（`retryCount`）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`），遍历每条规则的所有脚本，按脚本的 `interpreter` 分发执行：Groovy 走 `Channel.callAsync()` 沙盒，Shell/Batch 在节点以进程方式运行（`CommandInterpreter` + `Launcher`）
+- **`SystemPrerequisitesConfig`** — 独立配置类（`ManagementLink` + `Saveable`），作为「Manage Jenkins」页面的独立菜单项（不再嵌入 System Configuration），配置持久化到 `$JENKINS_HOME/node-prerequisites.xml`；存储系统级规则列表、重试次数（`retryCount`）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`），遍历每条规则的所有脚本，按脚本的 `interpreter` 分发执行：Groovy 走 `Channel.callAsync()` 沙盒，Shell/Batch 在节点以进程方式运行（`CommandInterpreter` + `Launcher`）
 - **`SystemPrerequisiteRule`** — 系统级规则数据类，包含多个 `PrerequisiteScript` 脚本条目、节点选择模式（all/labels/regex）、标签、正则等配置；支持向后兼容的单脚本字段
 - **`PrerequisiteScript`** — 单个执行脚本数据类，包含脚本内容、解释器（`interpreter`：groovy script / shell script / windows batch command）、模糊匹配节点模式（`nodePattern`，支持 `*` 和 `?` 通配符及逗号分隔多模式）、沙盒开关
 - **`GroovySandboxExecutor`** — Groovy 沙盒执行器（`hudson.remoting.Callable`），可序列化，通过 Remoting Channel 发送到节点执行，使用 `SecureASTCustomizer` 限制危险操作

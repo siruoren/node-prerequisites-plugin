@@ -20,10 +20,15 @@ package com.cloudbees.plugins;
 
 import edu.umd.cs.findbugs.annotations.NonNull;
 import hudson.Extension;
+import hudson.ExtensionList;
 import hudson.FilePath;
-import hudson.Proc;
+import hudson.XmlFile;
+import hudson.model.BulkChange;
 import hudson.model.Computer;
+import hudson.model.Descriptor;
+import hudson.model.ManagementLink;
 import hudson.model.Node;
+import hudson.model.Saveable;
 import hudson.model.TaskListener;
 import hudson.model.labels.LabelAtom;
 import hudson.remoting.Channel;
@@ -31,15 +36,21 @@ import hudson.remoting.VirtualChannel;
 import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
 import hudson.tasks.Shell;
-import jenkins.model.GlobalConfiguration;
+import jenkins.model.Jenkins;
+import jenkins.model.XStream2;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.jenkinsci.remoting.RoleChecker;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
+import org.kohsuke.stapler.interceptor.RequirePOST;
 
+import javax.servlet.ServletException;
+import java.io.File;
 import java.io.IOException;
+
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,7 +73,8 @@ import static hudson.model.TaskListener.NULL;
 /**
  * System-level (global) prerequisites configuration.
  * <p>
- * Stored under {@code Manage Jenkins > System Configuration}.
+ * Exposed as a standalone entry on the "Manage Jenkins" page
+ * (see {@link #getUrlName()} = {@code node-prerequisites}), not inside "Configure System".
  * Rules defined here run <strong>before</strong> job-level prerequisites.
  * All scripts run <strong>on the target node</strong> via Jenkins Remoting,
  * not on the Jenkins controller.
@@ -72,7 +84,7 @@ import static hudson.model.TaskListener.NULL;
  * seconds between attempts. Once a retry passes, the node is accepted.
  */
 @Extension
-public class SystemPrerequisitesConfig extends GlobalConfiguration {
+public class SystemPrerequisitesConfig implements ManagementLink, Saveable {
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisitesConfig.class.getName());
 
@@ -81,7 +93,6 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
     private int retryIntervalSeconds = 30;
     private int checkTimeoutSeconds = 60;
 
-    @DataBoundConstructor
     public SystemPrerequisitesConfig() {
         load();
     }
@@ -123,44 +134,77 @@ public class SystemPrerequisitesConfig extends GlobalConfiguration {
     }
 
     public static SystemPrerequisitesConfig get() {
-        return GlobalConfiguration.all().get(SystemPrerequisitesConfig.class);
+        return ExtensionList.lookupSingleton(SystemPrerequisitesConfig.class);
+    }
+
+    /**
+     * Persistence: store configuration under {@code $JENKINS_HOME/node-prerequisites.xml}
+     * instead of the global system-configuration file, so this page lives on its own
+     * "Manage Jenkins" entry rather than inside "Configure System".
+     */
+    private transient volatile XmlFile xmlFile;
+
+    public XmlFile getConfigFile() {
+        if (xmlFile == null) {
+            xmlFile = new XmlFile(XStream2.DEFAULT_XSTREAM,
+                    new File(Jenkins.get().getRootDir(), "node-prerequisites.xml"));
+        }
+        return xmlFile;
+    }
+
+    public void load() {
+        XmlFile f = getConfigFile();
+        if (f.exists()) {
+            try {
+                f.read(this);
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to load node-prerequisites configuration: " + e, e);
+            }
+        }
     }
 
     @Override
-    public boolean configure(StaplerRequest req, JSONObject json) throws FormException {
-        List<SystemPrerequisiteRule> oldRules = this.rules;
-
-        rules = new ArrayList<>();
-        if (json.has("rules")) {
-            JSONObject rulesObj = json.getJSONObject("rules");
-            if (!rulesObj.isNullObject()) {
-                rules = req.bindJSONToList(SystemPrerequisiteRule.class, rulesObj);
-            }
+    public void save() {
+        if (BulkChange.contains(this)) {
+            return;
         }
-
-        if (oldRules != null && rules != null) {
-            for (SystemPrerequisiteRule newRule : rules) {
-                if (newRule == null) continue;
-                if (newRule.getScripts() == null || newRule.getScripts().isEmpty()) {
-                    for (SystemPrerequisiteRule oldRule : oldRules) {
-                        if (oldRule != null && oldRule.getName() != null
-                                && oldRule.getName().equals(newRule.getName())) {
-                            List<PrerequisiteScript> effective = oldRule.getEffectiveScripts();
-                            if (!effective.isEmpty()) {
-                                newRule.setScripts(effective);
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
+        try {
+            getConfigFile().write(this);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to save node-prerequisites configuration: " + e, e);
         }
+    }
 
-        retryCount = json.optInt("retryCount", 3);
-        retryIntervalSeconds = json.optInt("retryIntervalSeconds", 30);
-        checkTimeoutSeconds = json.optInt("checkTimeoutSeconds", 60);
+    /**
+     * Handle the standalone configuration form submission from the
+     * "Manage Jenkins &gt; Node Prerequisites" page.
+     */
+    @RequirePOST
+    public void doConfigSubmit(StaplerRequest req, StaplerResponse rsp)
+            throws IOException, ServletException, Descriptor.FormException {
+        req.bindJSON(this, req.getSubmittedForm());
         save();
-        return true;
+        rsp.sendRedirect(".");
+    }
+
+    @Override
+    public String getIconFileName() {
+        return "gear.png";
+    }
+
+    @Override
+    public String getUrlName() {
+        return "node-prerequisites";
+    }
+
+    @Override
+    public String getDescription() {
+        return "Define system-level prerequisite rules that run on agent nodes before jobs start.";
+    }
+
+    @Override
+    public Category getCategory() {
+        return Category.CONFIGURATION;
     }
 
     /**

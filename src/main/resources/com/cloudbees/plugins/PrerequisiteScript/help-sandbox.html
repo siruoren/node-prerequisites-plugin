@@ -1,0 +1,9 @@
+<div>
+    When checked, the Groovy script runs inside the Jenkins Groovy <strong>sandbox</strong>
+    (a restricted execution environment). The sandbox whitelists safe operations and rejects
+    privileged ones, so most prerequisite checks (reading node properties, running simple
+    logic) work without granting the script full agent permissions.
+    <br/>
+    Uncheck only if your script needs APIs that the sandbox does not allow. Doing so lets the
+    script run with the agent's full privileges &mdash; use with care.
+</div>
