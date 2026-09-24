@@ -72,7 +72,12 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
             if (result instanceof Boolean) {
                 return (Boolean) result;
             }
-            return result != null;
+            // Normal completion without an explicit boolean return (null,
+            // e.g. a script that only println's) counts as PASS — same
+            // semantics as "exit code 0" for shell/batch checks. Only an
+            // explicit `return false` or a thrown exception marks the
+            // prerequisite as not met.
+            return true;
         } catch (Exception e) {
             // Log the full stack: message-only logging made sandbox config
             // errors (e.g. SecureASTCustomizer canonicalization failures)

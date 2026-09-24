@@ -4,7 +4,16 @@
     <ul>
         <li><strong>Groovy Script</strong> &ndash; a Groovy script evaluated in a sandbox
             <em>on the target node</em> (not the controller) via Jenkins Remoting.
-            It must return <code>true</code> to pass, or <code>false</code> to block the node.
+            Semantics mirror "exit code 0" for shell checks:
+            <ul>
+                <li><code>return false</code> (or a thrown exception) &ndash; node is blocked</li>
+                <li><code>return true</code>, or any other value &ndash; passes</li>
+                <li>a script that completes normally without returning a boolean
+                    (e.g. it only <code>println</code>s) &ndash; <strong>passes</strong></li>
+            </ul>
+            Script output (<code>println</code>) goes to the JVM stdout of the node
+            it runs on &mdash; the controller <code>jenkins.log</code> for the built-in
+            node, the agent log for remote agents.
             Available bindings:
             <ul>
                 <li><code>NODE_NAME</code> &ndash; node name (String)</li>
