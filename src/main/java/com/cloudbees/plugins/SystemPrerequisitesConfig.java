@@ -75,9 +75,10 @@ import static hudson.model.TaskListener.NULL;
  * All scripts run <strong>on the target node</strong> via Jenkins Remoting,
  * not on the Jenkins controller.
  * <p>
- * Retry mechanism: when a check fails, it will be retried up to
- * {@link #retryCount} times with a delay of {@link #retryIntervalSeconds}
- * seconds between attempts. Once a retry passes, the node is accepted.
+ * Retry mechanism: when a system-level check fails, it will be retried up to
+ * {@link SystemPrerequisitesData#getRetryCount()} times (0 = forever) with a
+ * delay of {@link SystemPrerequisitesData#getRetryIntervalSeconds()} seconds
+ * between attempts. Once a retry passes, the node is accepted.
  */
 @Extension
 public class SystemPrerequisitesConfig extends ManagementLink implements Saveable {
@@ -117,6 +118,21 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
 
     public static SystemPrerequisitesConfig get() {
         return ExtensionList.lookupSingleton(SystemPrerequisitesConfig.class);
+    }
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * All settings live in {@link SystemPrerequisitesData} inside the main
+     * {@code $JENKINS_HOME/config.xml}, so saving means persisting Jenkins itself.
+     */
+    @Override
+    public void save() {
+        try {
+            Jenkins.get().save();
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to persist System Prerequisites configuration: " + e, e);
+        }
     }
 
     /**
@@ -235,7 +251,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
             nodeName = "Built-In";
         }
 
-        for (SystemPrerequisiteRule rule : rules) {
+        for (SystemPrerequisiteRule rule : data().getRules()) {
             if (rule == null) continue;
             if (!rule.appliesToNode(node)) {
                 continue;
@@ -295,7 +311,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
             return nodeResult;
         }
 
-        for (SystemPrerequisiteRule rule : rules) {
+        for (SystemPrerequisiteRule rule : data().getRules()) {
             if (rule == null) continue;
 
             JSONObject ruleResult = new JSONObject();
@@ -408,12 +424,12 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
                 GroovySandboxExecutor executor = new GroovySandboxExecutor(script, variables);
                 hudson.remoting.Future<Boolean> rf = channel.callAsync(executor);
                 try {
-                    passed = rf.get(checkTimeoutSeconds, TimeUnit.SECONDS);
+                    passed = rf.get(data().getCheckTimeoutSeconds(), TimeUnit.SECONDS);
                 } catch (TimeoutException e) {
                     rf.cancel(true);
                     String msg = "System prerequisite '" + ruleName + "'" + labelSuffix
                             + " timed out on node: " + nodeName
-                            + " (timeout: " + checkTimeoutSeconds + "s)"
+                            + " (timeout: " + data().getCheckTimeoutSeconds() + "s)"
                             + taskSuffix(taskName);
                     LOGGER.log(Level.WARNING, msg);
                     return msg;
@@ -455,7 +471,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
     /**
      * Run a Shell / Windows Batch prerequisite script <strong>as a process on the target node</strong>.
      * Mirrors the job-level prerequisite execution: create the script file on the node, launch it,
-     * and enforce {@link #checkTimeoutSeconds} (killing the process on timeout).
+     * and enforce {@link SystemPrerequisitesData#getCheckTimeoutSeconds()} (killing the process on timeout).
      *
      * @return {@code null} if the script exits 0, otherwise a blocking reason string.
      */
@@ -496,12 +512,12 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
             });
 
             try {
-                int r = joinFuture.get(checkTimeoutSeconds, TimeUnit.SECONDS);
+                int r = joinFuture.get(data().getCheckTimeoutSeconds(), TimeUnit.SECONDS);
                 return r == 0 ? null : "System prerequisite '" + ruleName + "'" + labelSuffix
                         + " not met on node: " + nodeName + taskSuffix(safeTask);
             } catch (TimeoutException e) {
                 LOGGER.log(Level.WARNING, "Prerequisite check timed out for task {0} on {1} after {2}s, killing process",
-                        new Object[]{safeTask, nodeName, checkTimeoutSeconds});
+                        new Object[]{safeTask, nodeName, data().getCheckTimeoutSeconds()});
                 try {
                     proc.kill();
                 } catch (IOException killEx) {
@@ -512,7 +528,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
                 }
                 return "System prerequisite '" + ruleName + "'" + labelSuffix
                         + " timed out on node: " + nodeName
-                        + " (timeout: " + checkTimeoutSeconds + "s)" + taskSuffix(safeTask);
+                        + " (timeout: " + data().getCheckTimeoutSeconds() + "s)" + taskSuffix(safeTask);
             } catch (ExecutionException e) {
                 LOGGER.log(Level.WARNING, "Prerequisite check failed for task {0} on {1}: {2}",
                         new Object[]{safeTask, nodeName, e.getCause() != null ? e.getCause().getMessage() : e.getMessage()});
