@@ -228,12 +228,14 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
         return config != null ? config.getCheckTimeoutSeconds() : 60;
     }
 
+    /**
+     * Resolve the process interpreter for shell / batch checks.
+     * Groovy checks never reach this method (handled by {@link #checkGroovy}
+     * in the sandbox over Remoting).
+     */
     private CommandInterpreter getCommandInterpreter(String script) {
         if (WINDOWS.equals(interpreter)) {
             return new BatchFile(script);
-        }
-        if (GROOVY.equals(interpreter)) {
-            return new GroovyScript(script);
         }
         return new Shell(script);
     }

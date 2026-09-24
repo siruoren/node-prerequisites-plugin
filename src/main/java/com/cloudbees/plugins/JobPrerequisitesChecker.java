@@ -34,8 +34,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -58,10 +56,12 @@ import java.util.logging.Logger;
  *   <li>Job-level checks: always retried forever with a fixed 60 second interval.</li>
  * </ul>
  * <p>
- * Queue management: all prerequisite checks (system + job level) share a single
- * queue. At most {@code maxConcurrentChecks} checks run concurrently; additional
- * checks are queued in scheduling order (FIFO) until a slot frees up.
- * {@code maxConcurrentChecks <= 0} disables the limit.
+ * Queue management: {@code maxConcurrentChecks} limits the number of
+ * prerequisite checks (system + job level) running concurrently on a
+ * <strong>single node</strong>; additional checks are queued in scheduling
+ * order (FIFO) on that node until a slot frees up.
+ * {@code maxConcurrentChecks <= 0} disables the limit. There is no global
+ * cap across nodes.
  * <p>
  * Checks are strictly <strong>task-driven</strong>: {@link #canTake} is only
  * invoked by the Jenkins queue while a task is being scheduled onto a node,
@@ -113,6 +113,13 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
         int systemCount;
         /** serializes system-level check execution on this node (fair FIFO) */
         final Semaphore execution = new Semaphore(1, true);
+        /**
+         * Per-node concurrency limit for ALL checks on this node
+         * ({@code maxConcurrentChecks}); created/recreated when the
+         * configured limit changes. {@code null} = unlimited.
+         */
+        Semaphore concurrent;
+        int concurrentLimit = -1;
     }
 
     private final Map<String, NodeQueue> nodeQueues = new HashMap<String, NodeQueue>();
@@ -129,13 +136,6 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
     /** config version the pass cache was built against; cache cleared on change */
     private long seenConfigVersion = -1;
-
-    /**
-     * Fair FIFO semaphore limiting concurrent prerequisite checks.
-     * Recreated whenever the configured limit changes; {@code null} = unlimited.
-     */
-    private volatile Semaphore checkPermits;
-    private volatile int permitsLimit = -1;
 
     @Override
     public CauseOfBlockage canTake(final Node node, Queue.BuildableItem item) {
@@ -358,7 +358,6 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
     private void submitFuture(final String checkKey, final CheckTask task,
                               final String label, final Node node, final String taskName) {
-        final Semaphore permits = checkPermits();
         final boolean system = "system".equals(label);
         final NodeQueue nq = nodeQueueFor(node);
         if (system) {
@@ -372,7 +371,7 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
         Callable<CauseOfBlockage> callable = new Callable<CauseOfBlockage>() {
             public CauseOfBlockage call() throws Exception {
                 if (system) {
-                    return runWithPermits(permits, task, label, node, taskName, nq);
+                    return runWithPermits(task, label, node, taskName, nq, true);
                 }
                 // Job-level check: wait until NO system-level check is
                 // pending or running on this node, then run. The wait loop
@@ -382,7 +381,7 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
                         nq.wait();
                     }
                 }
-                return runWithPermits(permits, task, label, node, taskName, null);
+                return runWithPermits(task, label, node, taskName, nq, false);
             }
         };
         Future<CauseOfBlockage> f = pool.submit(callable);
@@ -394,47 +393,76 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     }
 
     /**
-     * Run a check with the global concurrency queue applied. For system-level
-     * checks ({@code nq != null}) execution is additionally serialized per
-     * node via {@link NodeQueue#execution}, and the node's pending count is
+     * Run a check with the per-node concurrency limit applied (if configured).
+     * For system-level checks execution is additionally serialized per node
+     * via {@link NodeQueue#execution}, and the node's pending count is
      * decremented (waking waiting job-level checks) when the check finishes,
-     * whatever the outcome. The node semaphore is acquired BEFORE the global
-     * permit so a queued same-node check does not waste a queue slot and
-     * block checks for other nodes.
+     * whatever the outcome. The node execution semaphore is acquired BEFORE
+     * the concurrency permit so a queued same-node check does not waste a
+     * slot and block other checks on the node.
      */
-    private CauseOfBlockage runWithPermits(Semaphore permits, CheckTask task,
-                                           String label, Node node, String taskName,
-                                           NodeQueue nq) throws Exception {
-        boolean system = nq != null;
+    private CauseOfBlockage runWithPermits(CheckTask task, String label, Node node,
+                                           String taskName, NodeQueue nq, boolean system) throws Exception {
         try {
             if (system) {
                 nq.execution.acquire();
             }
             try {
-                if (permits != null) {
+                Semaphore concurrent = nodeConcurrency(nq);
+                if (concurrent != null) {
                     try {
-                        permits.acquire();
+                        concurrent.acquire();
                     } catch (InterruptedException e) {
                         return CauseOfBlockage.fromMessage(
                                 Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(
                                         "interrupted while waiting in the prerequisite check queue"));
                     }
                 }
-                return executeCheck(task, label, node, taskName);
+                try {
+                    return executeCheck(task, label, node, taskName);
+                } finally {
+                    if (concurrent != null) {
+                        concurrent.release();
+                    }
+                }
             } finally {
-                if (permits != null) {
-                    permits.release();
+                if (system) {
+                    nq.execution.release();
                 }
             }
         } finally {
             if (system) {
-                nq.execution.release();
                 synchronized (nq) {
                     nq.systemCount--;
                     nq.notifyAll();
                 }
             }
         }
+    }
+
+    /**
+     * Return the per-node concurrency semaphore for the configured
+     * {@code maxConcurrentChecks} limit, recreating it when the limit
+     * changes. {@code null} = unlimited (limit &lt;= 0).
+     */
+    private Semaphore nodeConcurrency(NodeQueue nq) {
+        int limit = getConcurrentLimit();
+        if (limit <= 0) {
+            return null;
+        }
+        synchronized (nq) {
+            if (nq.concurrent == null || nq.concurrentLimit != limit) {
+                nq.concurrent = new Semaphore(limit, true);
+                nq.concurrentLimit = limit;
+                LOGGER.log(Level.INFO, "Per-node prerequisite check limit set to {0} concurrent checks", limit);
+            }
+            return nq.concurrent;
+        }
+    }
+
+    private int getConcurrentLimit() {
+        SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
+        return config != null ? config.getMaxConcurrentChecks() : 0;
     }
 
     /**
@@ -471,30 +499,6 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
                 return CauseOfBlockage.fromMessage(
                         Messages._JobPrerequisitesChecker_FailedToCheckJobProrequisites(e.getMessage()));
             }
-        }
-    }
-
-    /**
-     * Returns the fair FIFO semaphore that caps concurrent prerequisite checks,
-     * recreating it when the configured limit changes. {@code null} = unlimited.
-     */
-    private Semaphore checkPermits() {
-        SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
-        int limit = config != null ? config.getMaxConcurrentChecks() : 0;
-        if (limit <= 0) {
-            return null;
-        }
-        Semaphore s = checkPermits;
-        if (s != null && permitsLimit == limit) {
-            return s;
-        }
-        synchronized (this) {
-            if (checkPermits == null || permitsLimit != limit) {
-                checkPermits = new Semaphore(limit, true);
-                permitsLimit = limit;
-                LOGGER.log(Level.INFO, "Prerequisite check queue limit set to {0} concurrent checks", limit);
-            }
-            return checkPermits;
         }
     }
 

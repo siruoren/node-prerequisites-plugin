@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job 于某个节点上运行之前，先在该节点上执行一个前置检查脚本。如果脚本返回非零退出码，该节点将被跳过，Jenkins 会尝试将 Job 分配到其他符合条件的节点，或者将 Job 放回构建队列等待合适的节点。
+Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job 于某个节点上运行之前，先在该节点上执行一个前置检查脚本。Shell/Batch 检查以退出码判定（非 0 = 不通过），Groovy 沙盒检查以返回值判定（`return false` 或抛异常 = 不通过）。检查不通过时该节点将被跳过，Jenkins 会尝试将 Job 分配到其他符合条件的节点，或者将 Job 放回构建队列等待合适的节点。
 
 本插件基于 Jenkins 2.277.4 版本开发，支持两层前置条件检查体系：
 
@@ -21,7 +21,7 @@ Node Prerequisites Plugin（原 Slave Prerequisites Plugin）允许你在 Job �
 - **异步检查**：通过线程池异步执行所有检查（系统级和任务级），不阻塞 Jenkins 队列调度
 - **按需触发（无任务不检查）**：前置检查（系统级 + 任务级）只由任务调度驱动——仅当有任务进入构建队列、Jenkins 尝试把它分配到节点时（`QueueTaskDispatcher.canTake`）才执行；没有任务等待时不运行任何系统级检查，也没有后台/定时检查；重试只在任务仍在队列等待期间进行，任务离开队列即停止。唯一例外是管理员手动调用 REST API（`node-prerequisites-api/checkAllNodes`）主动触发
 - **重试机制**：系统级检查失败后自动重试（重试次数默认 `0`，表示无限重试）；任务级检查固定无限重试、间隔 60 秒
-- **统一队列管理**：所有前置检查（系统级 + 任务级）共享队列，`maxConcurrentChecks` 控制并发数量，超出的检查按调度先后（FIFO）排队执行
+- **节点级并发控制**：`maxConcurrentChecks` 限制**单个节点**上同时执行的前置检查数量（系统级 + 任务级），超出的检查按调度先后（FIFO）在该节点排队，`0` = 不限制；不同节点之间互不影响
 - **同节点先系统后任务**：多条系统级规则命中同一节点（或多个任务同时调度到同一节点）时，该节点的系统级检查按调度顺序逐个串行执行；任务级前置检查会等该节点**所有系统级检查执行完毕后**才开始运行，不同节点之间不受影响仍可并发
 - **全任务类型支持**：`Check job prerequisites` 选项对**所有任务类型**开放，包括流水线（Pipeline / WorkflowJob）、Freestyle、Matrix、Maven 等
 - **超时控制**：可自定义前置命令超时时间，超时后自动 kill 进程，避免僵尸程序堆积
@@ -49,7 +49,9 @@ JobPrerequisitesChecker.canTake(node, item)
     |       |       +-- 重试通过 --> 清除重试状态，进入 Phase 2
     |       |       +-- 重试次数 > 0 且超过最大重试次数 --> 永久拒绝该节点（BecauseSystemPrerequisitesArentMet）
     |       |       +-- 重试次数 = 0（默认） --> 无限重试，直到检查通过
-    |       +-- 全部通过 --> 进入 Phase 2
+    |       +-- 全部通过 --> 缓存通过结果（任务+节点维度），进入 Phase 2
+    |       |       （该任务后续调度/任务级重试期间不再重跑系统检查，
+    |       |         配置保存后缓存自动失效）
     |
     +-- Phase 2: 任务级检查（异步，在节点上执行）
             |
@@ -73,7 +75,7 @@ JobPrerequisitesChecker.canTake(node, item)
 | `retryCount` | 0 | 最大重试次数，**`0` = 无限重试**（仅系统级检查生效） |
 | `retryIntervalSeconds` | 30 | 每次重试间隔（秒） |
 | `checkTimeoutSeconds` | 60 | 前置命令超时时间（秒），超时后 kill 进程 |
-| `maxConcurrentChecks` | 4 | 统一队列最大并发检查数（0 = 不限制） |
+| `maxConcurrentChecks` | 4 | 单个节点最大并发检查数（0 = 不限制） |
 
 - `retryCount > 0`：失败后按间隔重试，超过次数后永久拒绝该节点，尝试其他节点
 - `retryCount = 0`（默认）：无限重试，任务留在队列中直到节点检查通过
@@ -87,14 +89,15 @@ JobPrerequisitesChecker.canTake(node, item)
 4. 重试通过 → 清除重试状态，允许任务在节点上执行
 5. （仅系统级且重试次数 > 0）超过最大重试次数 → 永久拒绝该节点，尝试其他节点
 
-### 统一队列管理
+### 并发排队管理（按节点）
 
-所有前置检查（系统级 + 任务级）共用一个调度队列：
+每个节点独立管理前置检查的并发与排队：
 
-- `maxConcurrentChecks` 控制同时执行的检查数量上限
-- 超过并发数量的检查按**调度先后顺序（FIFO）**排队，前面的检查执行完毕后依次执行
-- **同节点先系统后任务**：同一节点的系统级检查额外做节点级串行——无论由哪个任务触发（多个系统级规则命中同一节点、或多个任务同时调度到同一节点），该节点的系统级检查一次只执行一个，按调度先后顺序排队；**任务级检查必须等该节点全部系统级检查执行完毕后才开始**（每个节点的系统检查在提交时登记，排队中的任务级检查无法插队）；不同节点之间的检查不受影响，仍可并发
+- `maxConcurrentChecks` 控制**单个节点**上同时执行的检查数量上限（系统级 + 任务级都计入）
+- 超过并发数量的检查按**调度先后顺序（FIFO）**在该节点排队，前面的检查执行完毕后依次执行
+- **同节点先系统后任务**：同一节点的系统级检查额外做节点级串行——无论由哪个任务触发（多个系统级规则命中同一节点、或多个任务同时调度到同一节点），该节点的系统级检查一次只执行一个，按调度先后顺序排队；**任务级检查必须等该节点全部系统级检查执行完毕后才开始**（每个节点的系统检查在提交时登记，排队中的任务级检查无法插队）
 - 设置为 `0` 表示不限制并发
+- 不同节点之间互不影响：A 节点排队不会阻塞 B 节点的检查
 - 检查请求本身仍是异步提交的，队列排队不会阻塞 Jenkins 队列调度线程
 - **无任务不检查**：所有检查都由任务调度（`canTake`）触发，没有任务在队列等待时不会执行任何系统级检查；系统级检查通过后按「任务+节点」缓存通过结果，任务级检查重试期间**不会重复执行系统级检查**（执行顺序始终保持「先全部系统检查、后任务检查」），配置保存后缓存自动失效、下次调度重新检查
 
@@ -119,7 +122,7 @@ JobPrerequisitesChecker.canTake(node, item)
 | 配置位置 | Manage Jenkins > System Prerequisites | Job 配置页面（所有任务类型，含流水线） |
 | 执行位置 | 目标节点（通过 Remoting Channel） | 目标节点（通过 Launcher / Remoting） |
 | 执行方式 | Groovy 沙盒 / Shell / Batch（按解释器分发） | Shell/Batch 走 Launcher 进程，Groovy 走沙盒 |
-| 执行模式 | 异步（统一队列） | 异步（统一队列） |
+| 执行模式 | 异步（按节点并发控制） | 异步（按节点并发控制） |
 | 节点选择 | 支持标签匹配、正则匹配 | 所有节点 |
 | 重试策略 | 次数可配置（默认 0 = 无限） | 固定无限重试，间隔 60s |
 | 优先级 | 高（先执行） | 低（后执行） |
@@ -164,7 +167,7 @@ JobPrerequisitesChecker.canTake(node, item)
 | `retryCount` | 0 | 系统级检查最大重试次数，`0` = 无限重试 |
 | `retryIntervalSeconds` | 30 | 系统级检查重试间隔（秒） |
 | `checkTimeoutSeconds` | 60 | 前置命令超时时间（秒） |
-| `maxConcurrentChecks` | 4 | 统一队列最大并发检查数，`0` = 不限制 |
+| `maxConcurrentChecks` | 4 | 单个节点最大并发检查数，`0` = 不限制 |
 
 ### 节点选择模式
 
@@ -257,7 +260,7 @@ return !computer.isOffline()
 5. 在脚本输入框中编写前置检查脚本
 6. 保存配置
 
-> Groovy 沙盒脚本应返回 `true`/`false` 表示检查是否通过；与系统级检查一样使用 `NODE_NAME` 等绑定变量。
+> Groovy 沙盒脚本返回值语义（与 Shell/Batch「退出码 0 = 通过」对齐）：`return true`、返回其他任意值或正常结束 → **通过**；`return false` 或脚本抛异常 → **不通过**（原因显示在队列阻塞消息的 `detail` 中）。与系统级检查一样使用 `NODE_NAME` 等绑定变量。
 
 ### 使用示例
 
@@ -306,40 +309,29 @@ echo All prerequisites met for %NODE_NAME%
 exit /b 0
 ```
 
-**Groovy 脚本示例：**
+**Groovy 脚本示例（沙盒兼容写法）：**
 
 ```groovy
-println "Checking prerequisites on node: ${System.getenv('NODE_NAME')} (${System.getenv('NODE_IP')})"
+println "Checking prerequisites on node: ${NODE_NAME} (${NODE_IP})"
 
 // 检查 Docker 是否可用
 def docker = new File('/usr/bin/docker')
 if (!docker.exists()) {
-    println "Docker is not installed on ${System.getenv('NODE_NAME')}"
-    System.exit(1)
-}
-
-// 检查磁盘空间是否充足
-def process = "df -BG /".execute()
-process.waitFor()
-def line = process.text.readLines().get(1)
-def available = line.split(/\s+/)[3].replaceAll('G', '').toInteger()
-if (available < 10) {
-    println "Insufficient disk space: ${available}GB available"
-    System.exit(1)
+    println "Docker is not installed on ${NODE_NAME}"
+    return false
 }
 
 // 根据节点标签选择不同检查逻辑
-def labels = System.getenv('NODE_LABELS') ?: ''
-if (labels.contains('production')) {
-    def lockFile = new File('/etc/production.lock')
-    if (!lockFile.exists()) {
-        println "Production lock file not found"
-        System.exit(1)
-    }
+if (NODE_LABELS.contains('production') && !new File('/etc/production.lock').exists()) {
+    println "Production lock file not found on ${NODE_NAME}"
+    return false
 }
 
-println "All prerequisites met for ${System.getenv('NODE_NAME')}"
+println "All prerequisites met for ${NODE_NAME}"
+return true
 ```
+
+> **注意**：沙盒禁止在 `System` 等类型上调用方法，Groovy 脚本中不能使用 `System.getenv()`、`System.exit()`——请改用 `NODE_NAME` 等绑定变量，用 `return false` 表示不通过。需要读取环境变量、执行外部命令（如 `df`）的检查请改用 Shell/Batch 解释器。
 
 ## API 接口
 
@@ -497,6 +489,7 @@ git push origin v1.2
 
 | 插件版本 | Jenkins 版本 | 说明 |
 |----------|-------------|------|
+| 0.0.1 | 2.277.4+ | 大版本重构：配置迁入 `config.xml`（旧文件自动迁移）；所有任务类型（含流水线）开放任务级检查；任务级 Groovy 改走沙盒（无需节点 `groovy` CLI）；系统级重试次数可配置（0=无限）、任务级固定无限重试 60s；`maxConcurrentChecks` 改为**单节点**并发上限；同节点「先全部系统检查、后任务检查」顺序保证 + 系统级通过缓存；独立配置页（带图标/help）；REST API |
 | 1.2 | 2.277.4+ | 系统级规则支持多执行脚本，每个脚本支持模糊匹配指定节点执行 |
 | 1.2 | 2.277.4+ | 新增节点环境变量注入、Groovy 解释器、系统级前置检查 |
 | 1.2 | 2.277.4+ | 系统级规则新增多解释器支持（Groovy 沙盒 / Shell / Windows 批处理），命令框为多行输入 |
@@ -514,13 +507,12 @@ git push origin v1.2
 ### 核心类
 
 - **`JobPrerequisites`** — Job 属性类，存储任务级前置检查脚本配置（对所有任务类型开放，含流水线），在目标节点上启动进程执行 Shell/Batch 检查脚本并注入环境变量；Groovy 检查走 `GroovySandboxExecutor` 沙盒（经 Remoting，无需节点安装 Groovy）；超时后通过 `proc.kill()` 终止进程
-- **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制（系统级次数可配置、0=无限；任务级固定无限重试 60s 间隔）；通过公平 FIFO 信号量实现统一队列并发管理（`maxConcurrentChecks`）；节点级顺序保证（`NodeQueue`）：同一节点的系统级检查逐个串行执行，该节点的任务级检查等全部系统级检查完成后才开始，不同节点并发
+- **`JobPrerequisitesChecker`** — 队列调度拦截器（`QueueTaskDispatcher`），先执行系统级检查，通过后再执行任务级检查；内置重试机制（系统级次数可配置、0=无限；任务级固定无限重试 60s 间隔）；节点级顺序保证（`NodeQueue`）：同一节点的系统级检查逐个串行执行，该节点的任务级检查等全部系统级检查完成后才开始；`maxConcurrentChecks` 通过每节点公平 FIFO 信号量限制**单节点**并发检查数（0=不限制），不同节点之间互不影响；系统级检查通过结果按「任务+节点」缓存（配置版本号失效机制），任务级重试期间不重跑系统检查
 - **`SystemPrerequisitesConfig`** — 独立配置页（`ManagementLink`），作为「Manage Jenkins」页面的独立菜单项（带 `/images/24x24/gear.png` 图标），仅作编辑 UI；配置委托给 `SystemPrerequisitesData` 持久化
-- **`SystemPrerequisitesData`** — 配置数据载体（`NodeProperty`），存放在 `Jenkins.getGlobalNodeProperties()`，随 `$JENKINS_HOME/config.xml` 持久化；通过覆写 `reconfigure()` 保证「Configure System」保存时数据不被丢弃；`@Initializer` 自动从旧 `node-prerequisites.xml` 迁移；存储系统级规则列表、重试次数（`retryCount`，0=无限）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`）、队列并发（`maxConcurrentChecks`）
+- **`SystemPrerequisitesData`** — 配置数据载体（`NodeProperty`），存放在 `Jenkins.getGlobalNodeProperties()`，随 `$JENKINS_HOME/config.xml` 持久化；通过覆写 `reconfigure()` 保证「Configure System」保存时数据不被丢弃；`@Initializer` 自动从旧 `node-prerequisites.xml` 迁移；存储系统级规则列表、重试次数（`retryCount`，0=无限）、重试间隔（`retryIntervalSeconds`）、检查超时（`checkTimeoutSeconds`）、单节点并发（`maxConcurrentChecks`）
 - **`SystemPrerequisiteRule`** — 系统级规则数据类，包含多个 `PrerequisiteScript` 脚本条目、节点选择模式（all/labels/regex）、标签、正则等配置；支持向后兼容的单脚本字段
 - **`PrerequisiteScript`** — 单个执行脚本数据类，包含脚本内容、解释器（`interpreter`：groovy script / shell script / windows batch command）、模糊匹配节点模式（`nodePattern`，支持 `*` 和 `?` 通配符及逗号分隔多模式）、沙盒开关
-- **`GroovySandboxExecutor`** — Groovy 沙盒执行器（`hudson.remoting.Callable`），可序列化，通过 Remoting Channel 发送到节点执行，使用 `SecureASTCustomizer` 限制危险操作
-- **`GroovyScript`** — 任务级 Groovy 解释器（`CommandInterpreter`，保留兼容；当前任务级 Groovy 检查已改走 `GroovySandboxExecutor` 沙盒，不依赖节点上的 `groovy` CLI）
+- **`GroovySandboxExecutor`** — Groovy 沙盒执行器（`hudson.remoting.Callable`），可序列化，通过 Remoting Channel 发送到节点执行，使用 `SecureASTCustomizer` 限制危险操作；返回 `Result{passed, detail}` 结构化结果
 - **`BecausePrerequisitesArentMet`** — 任务级阻塞原因对象
 - **`BecauseSystemPrerequisitesArentMet`** — 系统级阻塞原因对象
 - **`SystemPrerequisiteCheckAPI`** — REST API 端点（`RootAction`），提供 `GET /node-prerequisites-api/checkAllNodes` 接口获取所有节点的系统级前置检查结果，支持 `detailed=true` 返回逐规则逐脚本的详细结果
@@ -528,15 +520,15 @@ git push origin v1.2
 
 ### 系统级检查流程
 
-1. `JobPrerequisitesChecker.canTake()` 通过线程池异步调用 `SystemPrerequisitesConfig.checkNode(node)`
-2. `checkNode(node)` 遍历所有规则
+1. `JobPrerequisitesChecker.canTake()` 通过线程池异步调用 `SystemPrerequisitesConfig.checkNode(node, taskName)`
+2. `checkNode(node, taskName)` 遍历所有规则
 3. 对每条规则，先通过 `appliesToNode(node)` 检查节点是否匹配（规则级过滤：all/labels/regex）
 4. 获取规则的有效脚本列表 `getEffectiveScripts()`（优先使用 `scripts` 列表，向后兼容回退到单脚本字段）
 5. 遍历每个 `PrerequisiteScript`，通过 `appliesToNode(nodeName)` 检查脚本的模糊匹配模式是否匹配当前节点
-6. 按脚本的 `interpreter` 分发：Groovy 构造 `GroovySandboxExecutor`（含脚本和变量）通过 `Channel.call(executor)` 发送到节点沙盒执行；Shell/Batch 在节点以进程方式运行
-7. 在节点的 Agent JVM 中执行 Groovy 沙盒脚本（`SecureASTCustomizer` 限制危险操作）
-8. 脚本返回 `false` 或抛异常时，返回 `BecauseSystemPrerequisitesArentMet`
-9. 所有系统级规则的所有匹配脚本通过后，进入任务级检查
+6. 按脚本的 `interpreter` 分发：Groovy 构造 `GroovySandboxExecutor`（含脚本和绑定变量）通过 `channel.callAsync(executor)` 异步发送到节点沙盒执行；Shell/Batch 在节点以进程方式运行
+7. 绑定变量由 `buildNodeEnvironment(node)` 统一构建——远程 Agent 经 Remoting 在 Agent 侧查询主机名/IP，与 Shell/Batch 的环境变量完全一致
+8. 在节点的 Agent JVM 中执行 Groovy 沙盒脚本（`SecureASTCustomizer` 限制危险操作）；脚本返回 `false` 或抛异常时返回失败原因，包装为 `BecauseSystemPrerequisitesArentMet`
+9. 所有系统级规则的所有匹配脚本通过后，进入任务级检查（通过结果按「任务+节点」缓存，配置变更后自动失效）
 
 ### 重试机制流程
 
@@ -549,6 +541,7 @@ git push origin v1.2
    - 新检查通过 → 清除 `RetryState`，返回 `null`（允许节点）
    - 新检查失败 → `retryCount++`，重复步骤 4
 5. `retryCount > maxRetries` → 返回永久阻塞（`lastBlockage`）
+6. **系统级通过缓存**：系统级检查通过后按「任务+节点」缓存结果，同一任务在该节点的后续调度（含任务级检查重试）直接跳过系统级检查，避免「系统→任务→系统」交错执行；配置保存后缓存自动失效
 
 ### 任务级检查流程
 
@@ -564,10 +557,13 @@ git push origin v1.2
 
 `GroovySandboxExecutor` 使用 Groovy 的 `SecureASTCustomizer` 实现沙盒：
 
-- **导入白名单**：`java.lang.Math`、`java.io.File`、`java.net.InetAddress`、`java.util.*`
-- **接收者黑名单**：`System`、`Runtime`、`Thread`、`ClassLoader`、`ProcessBuilder`、`Process`、`GroovyShell`、`GroovyClassLoader`
+- **导入白名单**：仅允许安全类的显式导入（`java.lang.Math`、`java.io.File`、`java.net.InetAddress`、`java.util.*` 等），如 `import java.lang.Runtime` 会被拒绝；`Eval.me`、静态导入危险方法同样被拦截
+- **接收者黑名单**：`System`、`Runtime`、`Thread`、`ThreadGroup`、`ClassLoader`、`Class`、`ProcessBuilder`、`Process`、`groovy.lang.Binding`、`GroovyShell`、`GroovyClassLoader`、`Eval`、`ProcessGroovyMethods`
+- **间接导入检查关闭**：groovy 2.4 下开启 `setIndirectImportCheckEnabled` 会导致所有脚本编译失败（隐式表达式不在白名单），因此只限制显式 `import` 语句
+- **已知无法拦截的边界**（groovy 2.4 静态分析能力所限）：`"command".execute()`（DGM 扩展）、`new ProcessBuilder(...)`（构造器不检查）、动态 receiver 反射——需要执行命令请用 Shell/Batch 解释器
 - **编译配置**：通过 `CompilerConfiguration` 添加编译自定义器
 - **Binding**：提供 `NODE_NAME`、`NODE_HOSTNAME`、`NODE_IP`、`NODE_LABELS` 等变量（可序列化，通过 Remoting 传输到节点）
+- **执行结果**：返回 `Result{passed, detail}`（可序列化），`detail` 为单行失败摘要，显示在队列阻塞消息中
 
 ## 许可证
 

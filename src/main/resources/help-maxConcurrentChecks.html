@@ -1,8 +1,9 @@
 <div>
     Maximum number of prerequisite checks (system-level <em>and</em> job-level)
-    that may run at the same time. All checks share one queue: when the limit
-    is reached, further checks are queued and executed one by one in
-    scheduling order (first-come-first-served).
+    that may run at the same time <strong>on a single node</strong>. Each node
+    has its own limit: when the limit is reached on a node, further checks for
+    that node are queued and executed one by one in scheduling order
+    (first-come-first-served), while checks on other nodes are unaffected.
     <br/><br/>
     Set to <code>0</code> to disable the limit (every check starts immediately).
     <br/><br/>

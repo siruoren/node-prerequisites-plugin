@@ -26,8 +26,6 @@ import hudson.model.Computer;
 import hudson.model.Descriptor;
 import hudson.model.ManagementLink;
 import hudson.model.Node;
-import hudson.model.Saveable;
-import hudson.model.TaskListener;
 import hudson.model.labels.LabelAtom;
 import hudson.remoting.Channel;
 import hudson.remoting.VirtualChannel;
@@ -81,7 +79,7 @@ import static hudson.model.TaskListener.NULL;
  * between attempts. Once a retry passes, the node is accepted.
  */
 @Extension
-public class SystemPrerequisitesConfig extends ManagementLink implements Saveable {
+public class SystemPrerequisitesConfig extends ManagementLink {
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisitesConfig.class.getName());
 
@@ -124,7 +122,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
 
     /**
      * Max number of prerequisite checks (system + job level) executed
-     * concurrently; {@code 0} means unlimited.
+     * concurrently on a single node; {@code 0} means unlimited.
      */
     public int getMaxConcurrentChecks() {
         return data().getMaxConcurrentChecks();
@@ -135,24 +133,10 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
     }
 
     /**
-     * {@inheritDoc}
-     * <p>
-     * All settings live in {@link SystemPrerequisitesData} inside the main
-     * {@code $JENKINS_HOME/config.xml}, so saving means persisting Jenkins itself.
-     */
-    @Override
-    public void save() {
-        try {
-            Jenkins.get().save();
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to persist System Prerequisites configuration: " + e, e);
-        }
-    }
-
-    /**
      * Persistence: all settings live in {@link SystemPrerequisitesData}, a
      * {@code globalNodeProperties} entry stored inside the main
-     * {@code $JENKINS_HOME/config.xml}. This page is only the editing UI.
+     * {@code $JENKINS_HOME/config.xml}. This page is only the editing UI;
+     * submitting it binds the form to the data holder and persists Jenkins.
      */
     @RequirePOST
     public void doConfigSubmit(StaplerRequest req, StaplerResponse rsp)
@@ -223,18 +207,6 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
     @Override
     public ManagementLink.Category getCategory() {
         return ManagementLink.Category.CONFIGURATION;
-    }
-
-    /**
-     * Run all applicable system-level rules against the given node.
-     * Convenience overload that omits the task name in logs.
-     *
-     * @param node the target node
-     * @return {@code null} if all rules pass, a blocking reason string if any rule fails
-     * @see #checkNode(Node, String)
-     */
-    public String checkNode(Node node) throws IOException, InterruptedException {
-        return checkNode(node, null);
     }
 
     /**
@@ -409,9 +381,8 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
         if (interpreter == null || SystemPrerequisiteRule.INTERP_GROOVY.equals(interpreter)) {
             return runGroovyOnNode(script, node, nodeName, ruleName, scriptLabel, taskName);
         } else {
-            String reason = runInterpreterOnNode(script, interpreter, node,
+            return runInterpreterOnNode(script, interpreter, node,
                     ruleName, nodeName, taskName, scriptLabel);
-            return reason;
         }
     }
 
@@ -423,7 +394,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
     private String runGroovyOnNode(String script, Node node, String nodeName,
                                    String ruleName, String scriptLabel, String taskName)
             throws IOException, InterruptedException {
-        Map<String, Object> variables = buildBinding(node, nodeName);
+        Map<String, Object> variables = buildGroovyBinding(node);
         String labelSuffix = (scriptLabel != null && !scriptLabel.isEmpty()
                 && !"*".equals(scriptLabel))
                 ? " [pattern: " + scriptLabel + "]" : "";
@@ -569,35 +540,20 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
         return new Shell(script);
     }
 
-    private Map<String, Object> buildBinding(Node node, String nodeName) {
+    /**
+     * Build the Groovy binding variables (NODE_NAME, NODE_HOSTNAME, NODE_IP,
+     * NODE_LABELS) from {@link #buildNodeEnvironment(Node)}, so Groovy scripts
+     * see exactly the same values as Shell/Batch scripts &mdash; including the
+     * agent-side hostname/IP queried over Remoting.
+     */
+    private Map<String, Object> buildGroovyBinding(Node node) {
         Map<String, Object> vars = new HashMap<>();
-
-        vars.put("NODE_NAME", nodeName);
-
-        String hostName = "";
-        String hostIp = "";
-        try {
-            InetAddress addr = InetAddress.getLocalHost();
-            hostName = addr.getHostName();
-            hostIp = addr.getHostAddress();
-        } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Failed to get host info: {0}", e.getMessage());
-        }
-        vars.put("NODE_HOSTNAME", hostName);
-        vars.put("NODE_IP", hostIp);
-
-        StringBuilder labels = new StringBuilder();
-        Set<LabelAtom> assignedLabels = node.getAssignedLabels();
-        if (assignedLabels != null) {
-            for (LabelAtom label : assignedLabels) {
-                if (labels.length() > 0) {
-                    labels.append(" ");
-                }
-                labels.append(label.getName());
+        for (String env : buildNodeEnvironment(node)) {
+            int idx = env.indexOf('=');
+            if (idx > 0) {
+                vars.put(env.substring(0, idx), env.substring(idx + 1));
             }
         }
-        vars.put("NODE_LABELS", labels.toString());
-
         return vars;
     }
 
