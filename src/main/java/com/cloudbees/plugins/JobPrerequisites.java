@@ -204,8 +204,7 @@ public class JobPrerequisites extends JobProperty<AbstractProject<?, ?>> impleme
         LOGGER.log(Level.WARNING, "Groovy prerequisite check for task {0} not met on {1}{2}",
                 new Object[]{logTask, node.getNodeName(), detail});
         return CauseOfBlockage.fromMessage(
-                "Job prerequisite check failed for task " + logTask + " on node "
-                        + node.getNodeName() + detail);
+                Messages._JobPrerequisites_PrerequisiteCheckFailed(logTask, node.getNodeName(), detail));
     }
 
     /**
