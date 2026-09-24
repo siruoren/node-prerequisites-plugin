@@ -74,7 +74,11 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
             }
             return result != null;
         } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Groovy sandbox script failed: {0}", e.getMessage());
+            // Log the full stack: message-only logging made sandbox config
+            // errors (e.g. SecureASTCustomizer canonicalization failures)
+            // impossible to diagnose from the Jenkins startup log.
+            LOGGER.log(Level.WARNING,
+                    "Groovy sandbox script failed: " + e, e);
             return false;
         }
     }
@@ -117,18 +121,50 @@ public class GroovySandboxExecutor implements Callable<Boolean, RuntimeException
                 "java.util.Arrays"
         ));
 
-        customizer.setIndirectImportCheckEnabled(true);
+        // NOTE: indirect import checks MUST stay disabled. When enabled, the
+        // SecureASTCustomizer verifies the resolved type of EVERY expression at
+        // canonicalization time; implicit java.lang.Object (bound variables,
+        // closures, property expressions) is not in any whitelist, so every
+        // script dies with "General error during canonicalization: Indirect
+        // import checks prevents usage of expression". With it disabled the
+        // imports whitelist only restricts EXPLICIT import statements, which is
+        // what we want; dangerous operations are blocked via receiver
+        // blacklists below.
+        customizer.setIndirectImportCheckEnabled(false);
 
+        // Blocks method calls whose RECEIVER type is statically inferable and
+        // in the list. Verified against groovy 2.4.12 (bundled with Jenkins
+        // 2.277.4): System.exit / Runtime.getRuntime / Class.forName /
+        // Eval.me / explicit "import java.lang.Runtime" are all rejected at
+        // compile time.
         customizer.setReceiversBlackList(Arrays.asList(
                 System.class.getName(),
                 Runtime.class.getName(),
                 Thread.class.getName(),
+                ThreadGroup.class.getName(),
                 ClassLoader.class.getName(),
                 "java.lang.ProcessBuilder",
                 "java.lang.Process",
+                "java.lang.Class",
+                "groovy.lang.Binding",
                 "groovy.lang.GroovyShell",
-                "groovy.lang.GroovyClassLoader"
+                "groovy.lang.GroovyClassLoader",
+                "groovy.util.Eval",
+                "org.codehaus.groovy.runtime.ProcessGroovyMethods"
         ));
+
+        // Security boundary note: SecureASTCustomizer in groovy 2.4.x has no
+        // method-name blacklist (setMethodsBlackList only exists in groovy
+        // 2.5+; calling it here would not even compile). Consequently leaks
+        // that were verified empirically and are ACCEPTED RISKS for scripts
+        // configured by Jenkins administrators:
+        //   - String/List.execute()      (DGM process spawning, receiver is
+        //                                 String/List, not ProcessGroovyMethods)
+        //   - new ProcessBuilder(...)    (constructor calls are not checked)
+        //   - dynamic-receiver reflective calls (e.g. this.class.getClassLoader())
+        // Use the Shell/Batch interpreter to run commands; for hard sandboxing
+        // use the Jenkins script-security plugin.
+        //
 
         ImportCustomizer importCustomizer = new ImportCustomizer();
         importCustomizer.addImports(
