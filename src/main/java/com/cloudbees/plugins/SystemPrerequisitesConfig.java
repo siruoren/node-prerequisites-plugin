@@ -23,7 +23,6 @@ import hudson.Extension;
 import hudson.ExtensionList;
 import hudson.FilePath;
 import hudson.XmlFile;
-import hudson.model.BulkChange;
 import hudson.model.Computer;
 import hudson.model.Descriptor;
 import hudson.model.ManagementLink;
@@ -37,7 +36,6 @@ import hudson.tasks.BatchFile;
 import hudson.tasks.CommandInterpreter;
 import hudson.tasks.Shell;
 import jenkins.model.Jenkins;
-import jenkins.model.XStream2;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.jenkinsci.remoting.RoleChecker;
@@ -84,7 +82,7 @@ import static hudson.model.TaskListener.NULL;
  * seconds between attempts. Once a retry passes, the node is accepted.
  */
 @Extension
-public class SystemPrerequisitesConfig implements ManagementLink, Saveable {
+public class SystemPrerequisitesConfig extends ManagementLink implements Saveable {
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisitesConfig.class.getName());
 
@@ -146,30 +144,34 @@ public class SystemPrerequisitesConfig implements ManagementLink, Saveable {
 
     public XmlFile getConfigFile() {
         if (xmlFile == null) {
-            xmlFile = new XmlFile(XStream2.DEFAULT_XSTREAM,
-                    new File(Jenkins.get().getRootDir(), "node-prerequisites.xml"));
+            Jenkins j = Jenkins.getInstanceOrNull();
+            if (j != null) {
+                xmlFile = new XmlFile(new File(j.getRootDir(), "node-prerequisites.xml"));
+            }
         }
         return xmlFile;
     }
 
     public void load() {
         XmlFile f = getConfigFile();
-        if (f.exists()) {
-            try {
-                f.read(this);
-            } catch (IOException e) {
-                LOGGER.log(Level.WARNING, "Failed to load node-prerequisites configuration: " + e, e);
-            }
+        if (f == null || !f.exists()) {
+            return;
+        }
+        try {
+            f.unmarshal(this);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to load node-prerequisites configuration: " + e, e);
         }
     }
 
     @Override
     public void save() {
-        if (BulkChange.contains(this)) {
+        XmlFile f = getConfigFile();
+        if (f == null) {
             return;
         }
         try {
-            getConfigFile().write(this);
+            f.write(this);
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Failed to save node-prerequisites configuration: " + e, e);
         }
@@ -203,8 +205,8 @@ public class SystemPrerequisitesConfig implements ManagementLink, Saveable {
     }
 
     @Override
-    public Category getCategory() {
-        return Category.CONFIGURATION;
+    public ManagementLink.Category getCategory() {
+        return ManagementLink.Category.CONFIGURATION;
     }
 
     /**
