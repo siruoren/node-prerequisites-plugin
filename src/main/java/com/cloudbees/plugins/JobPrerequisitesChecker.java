@@ -69,6 +69,11 @@ import java.util.logging.Logger;
  * task. There is no periodic/background check; the only other trigger is the
  * admin REST API ({@code node-prerequisites-api/checkAllNodes}).
  * <p>
+ * Pass cache: once the system-level checks pass for a task on a node, the
+ * result is cached per task+node (invalidated on configuration change), so
+ * job-level check retries do <strong>not</strong> re-run the system rules
+ * &mdash; the execution order is always "all system checks, then job checks".
+ * <p>
  * Same-node ordering: for each node, system-level checks run one at a time,
  * sequentially &mdash; including checks triggered by different queued tasks
  * &mdash; and a job-level check on that node only starts after <strong>all</strong>
@@ -113,6 +118,19 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
     private final Map<String, NodeQueue> nodeQueues = new HashMap<String, NodeQueue>();
 
     /**
+     * System-check pass cache, keyed by "sys:itemId:nodeName" with the time of
+     * the pass. Without it, every scheduling attempt &mdash; in particular
+     * every job-level check retry of a task waiting in the queue &mdash; would
+     * re-run ALL system rules, producing an interleaved
+     * "system, job, system" execution order. Entries are dropped when the
+     * configuration changes or they expire (30 minutes).
+     */
+    private final Map<String, Long> systemPassed = new HashMap<String, Long>();
+
+    /** config version the pass cache was built against; cache cleared on change */
+    private long seenConfigVersion = -1;
+
+    /**
      * Fair FIFO semaphore limiting concurrent prerequisite checks.
      * Recreated whenever the configured limit changes; {@code null} = unlimited.
      */
@@ -129,21 +147,33 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
 
         // --- Phase 1: System-level checks (run first, on the node) ---
         // Retry count from the configuration; 0 (or less) means retry forever.
+        // Once the system checks have passed for this task on this node, the
+        // result is cached: while the JOB-level check retries (fixed infinite
+        // retries, 60s), the system rules are NOT re-executed on every
+        // scheduling attempt — the order stays "all system checks, then job
+        // checks". The cache is invalidated when the configuration changes.
         String sysKey = "sys:" + key(item, node);
-        CauseOfBlockage sysBlockage = runWithRetry(sysKey, node, new CheckTask() {
-            public CauseOfBlockage execute(String taskName) throws Exception {
-                SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
-                if (config == null) return null;
-                String reason = config.checkNode(node, taskName);
-                if (reason != null) {
-                    return new BecauseSystemPrerequisitesArentMet(node, reason);
-                }
-                return null;
-            }
-        }, CHECKING_SYSTEM, "system", taskName, getRetryCount(), getRetryIntervalMillis());
+        clearSystemPassCacheIfConfigChanged();
 
-        if (sysBlockage != null) {
-            return sysBlockage;
+        if (!systemPassed.containsKey(sysKey)) {
+            CauseOfBlockage sysBlockage = runWithRetry(sysKey, node, new CheckTask() {
+                public CauseOfBlockage execute(String taskName) throws Exception {
+                    SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
+                    if (config == null) return null;
+                    String reason = config.checkNode(node, taskName);
+                    if (reason != null) {
+                        return new BecauseSystemPrerequisitesArentMet(node, reason);
+                    }
+                    return null;
+                }
+            }, CHECKING_SYSTEM, "system", taskName, getRetryCount(), getRetryIntervalMillis());
+
+            if (sysBlockage != null) {
+                return sysBlockage;
+            }
+            // System check passed — cache it for this task+node so later
+            // canTake calls (job-check retries) skip straight to Phase 2.
+            cacheSystemPass(sysKey);
         }
 
         // --- Phase 2: Job-level checks (run after system-level passes, on the node) ---
@@ -157,6 +187,46 @@ public class JobPrerequisitesChecker extends QueueTaskDispatcher {
                 return prerequisite.check(node, taskName);
             }
         }, CHECKING_JOB, "job", taskName, 0, JOB_RETRY_INTERVAL_MS);
+    }
+
+    /**
+     * Record a system-check pass for the given task+node key. Occasionally
+     * sweeps entries older than 30 minutes to bound the map size.
+     */
+    private void cacheSystemPass(String sysKey) {
+        long now = System.currentTimeMillis();
+        synchronized (systemPassed) {
+            if (systemPassed.size() > 256) {
+                java.util.Iterator<Map.Entry<String, Long>> it =
+                        systemPassed.entrySet().iterator();
+                while (it.hasNext()) {
+                    if (now - it.next().getValue() > 30 * 60 * 1000L) {
+                        it.remove();
+                    }
+                }
+            }
+            systemPassed.put(sysKey, now);
+        }
+    }
+
+    /**
+     * Drop the system-check pass cache when the configuration has changed
+     * (version bump on every save of the System Prerequisites page), so rule
+     * edits take effect on the next scheduling attempt.
+     */
+    private void clearSystemPassCacheIfConfigChanged() {
+        SystemPrerequisitesConfig config = SystemPrerequisitesConfig.get();
+        long v = config != null ? config.getConfigVersion() : 0L;
+        if (v == seenConfigVersion) {
+            return;
+        }
+        synchronized (this) {
+            if (v != seenConfigVersion) {
+                systemPassed.clear();
+                seenConfigVersion = v;
+                LOGGER.log(Level.INFO, "System prerequisite pass cache cleared (configuration changed)");
+            }
+        }
     }
 
     /**

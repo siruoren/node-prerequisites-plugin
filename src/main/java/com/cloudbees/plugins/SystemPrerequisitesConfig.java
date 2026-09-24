@@ -85,6 +85,20 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
 
     private static final Logger LOGGER = Logger.getLogger(SystemPrerequisitesConfig.class.getName());
 
+    /**
+     * Bumped on every configuration save. The queue checker
+     * ({@link JobPrerequisitesChecker}) uses it to detect configuration
+     * changes and invalidate its system-check pass cache.
+     */
+    private volatile long configVersion = 0L;
+
+    /**
+     * Monotonic configuration version; changes on every save of this page.
+     */
+    public long getConfigVersion() {
+        return configVersion;
+    }
+
     private SystemPrerequisitesData data() {
         return SystemPrerequisitesData.get();
     }
@@ -145,6 +159,7 @@ public class SystemPrerequisitesConfig extends ManagementLink implements Saveabl
             throws IOException, ServletException, Descriptor.FormException {
         SystemPrerequisitesData data = data();
         req.bindJSON(data, req.getSubmittedForm());
+        configVersion++;
         Jenkins.get().save();
         rsp.sendRedirect(".");
     }
